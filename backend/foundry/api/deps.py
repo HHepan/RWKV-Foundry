@@ -85,9 +85,17 @@ class CudaModelLoader:
 
         torch.cuda.empty_cache()
 
+        # 词表必须用 RWKV-PEFT 自带的那份，保证与训练时一致。
+        # 原版从 rwkv pip 包内部取，版本可能不同 → token id 错位且不报错。
+        vocab = self._paths.vocab
+        if not vocab.is_file():
+            raise ConfigError(
+                f"缺少词表文件: {vocab}\n"
+                f"  它应随 RWKV-PEFT 一起克隆。请确认 workspace/tools/RWKV-PEFT 完整。"
+            )
+
         model = RWKV_x070_Dual(model=model_path, strategy=strategy)
-        tokenizer_path = str(self._paths.vocab)
-        pipeline = PIPELINE(model, "rwkv_vocab_v20230424", vocab_path=tokenizer_path)
+        pipeline = PIPELINE(model, "rwkv_vocab_v20230424", vocab_path=str(vocab))
 
         self._loaded = (model, pipeline)
         return pipeline, pipeline.tokenizer

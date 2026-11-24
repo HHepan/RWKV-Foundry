@@ -57,21 +57,87 @@ RWKV-Foundry/
 ## 快速开始
 
 ```bash
-# 环境
+# ── 后端 ────────────────────────────────────────────────────────────────
 conda create -n foundry python=3.11 && conda activate foundry
-
-# 装依赖（分场景）
 cd backend
-pip install -e ".[dev]"          # 仅 Web 与测试
-pip install -e ".[dev,train]"    # 加训练/推理（torch 需匹配本机 CUDA）
 
-# 准备 workspace
-git clone https://github.com/JL-er/RWKV-PEFT.git ../workspace/tools/RWKV-PEFT
-cp /path/to/rwkv7-*.pth ../workspace/base_models/
+# 只跑 Web 与单元测试（无需 GPU / torch）
+pip install -e ".[dev]"
 
-# 测试
-pytest
+# 要跑训练与推理，额外装 train 组
+pip install -e ".[dev,train]"
 ```
+
+### 关于 torch 与 CUDA（重要）
+
+`.[train]` 里的 `torch>=2.1` 装到的是 **PyPI 默认 wheel**，在部分机器上是 CPU 版
+或与你的驱动不匹配。**必须按本机 CUDA 版本显式指定索引**：
+
+```bash
+# 先确认驱动支持的 CUDA 版本
+nvidia-smi          # 右上角 "CUDA Version: 12.x"
+
+# 再装对应 wheel（示例：CUDA 12.1）
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+```
+
+装反了不会报错，只会 `torch.cuda.is_available()` 返回 False，
+然后发现"训练极慢"——因为它悄悄跑在 CPU 上。
+
+### 准备 workspace
+
+```bash
+# 数据目录可以放在仓库外，用 FOUNDRY_HOME 指向（推荐，避免仓库变胖）
+mkdir -p /data/foundry/{base_models,data,checkpoints,tools}
+
+# 克隆上游微调框架
+git clone https://github.com/JL-er/RWKV-PEFT.git /data/foundry/tools/RWKV-PEFT
+cd /data/foundry/tools/RWKV-PEFT && pip install -r requirements.txt && cd -
+
+# 放入基底权重
+cp rwkv7-g1a-0.1b-*.pth /data/foundry/base_models/
+```
+
+### 前端
+
+```bash
+cd frontend
+npm install
+npm run dev        # http://127.0.0.1:5173
+```
+
+**注意**：若环境设了 `NODE_ENV=production`，`npm install` 会**跳过
+devDependencies**，导致 vite 缺失、`npm run dev` 报 `vite: not found`。
+遇到时用：
+
+```bash
+NODE_ENV=development npm install --include=dev
+```
+
+### 启动
+
+```bash
+# 后端（在 backend/ 下）
+export FOUNDRY_HOME=/data/foundry
+uvicorn foundry.api.app:app_factory --factory --host 127.0.0.1 --port 8000
+
+# 前端会通过 vite proxy 自动转发 /api 到 8000，无需额外配置 CORS
+```
+
+### 验证
+
+```bash
+cd backend && pytest              # 238 项，无需 GPU
+curl http://127.0.0.1:8000/api/health
+```
+
+预期输出：
+
+```json
+{"ok":true,"model_loaded":false,"model_ref":null,"active_train":null,"schema_version":1}
+```
+
+`model_loaded: false` 是正常的——模型在你第一次发起对话时才加载。
 
 ## 配置
 

@@ -57,3 +57,9 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 # B008: FastAPI 的 Depends() 必须写在参数默认值里，这是框架惯用法而非缺陷。
 # E501: 行长由 formatter 统一，不单独告警。
 ignore = ["E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# third_party/ 是上游 RWKV 代码原样移植，保持原貌以便与上游 diff。
+# 格式化它会让后续升级时无法对比，反而增加维护成本。
+# 修改记录见 foundry/third_party/PROVENANCE.md。
+"foundry/third_party/*" = ["E", "F", "W", "I", "UP", "B", "SIM"]
