@@ -33,7 +33,22 @@ from foundry.train.script import (
 
 
 @pytest.fixture
-def paths(tmp_path):
+def paths(tmp_path, monkeypatch):
+    """构造一个完全隔离的 workspace。
+
+    ## 必须屏蔽外部环境变量（这里踩过坑）
+
+    起初只设了 `FOUNDRY_HOME`，没动 `FOUNDRY_PEFT_DIR`。在开发机上
+    （没设后者）测试通过；到了实际训练机——那里 export 了
+    `FOUNDRY_PEFT_DIR` 指向真实的 RWKV-PEFT——测试就**跑到了生产目录里**，
+    在里面建 other_run/ 并写 keep.bin。
+
+    测试污染生产目录是不可接受的。用 monkeypatch.delenv 强制移除，
+    保证无论外部环境如何配置，测试都只碰 tmp_path。
+    """
+    monkeypatch.delenv("FOUNDRY_PEFT_DIR", raising=False)
+    monkeypatch.setenv("FOUNDRY_HOME", str(tmp_path / "workspace"))
+
     peft = tmp_path / "workspace" / "tools" / "RWKV-PEFT"
     for rel in (
         "train.py",
@@ -47,9 +62,13 @@ def paths(tmp_path):
     (tmp_path / "workspace" / "data").mkdir(parents=True)
     (tmp_path / "workspace" / "checkpoints").mkdir(parents=True)
     (tmp_path / "workspace" / "base_models").mkdir(parents=True)
-    os.environ["FOUNDRY_HOME"] = str(tmp_path / "workspace")
-    yield resolve_paths()
-    os.environ.pop("FOUNDRY_HOME", None)
+
+    resolved = resolve_paths()
+    # 双保险：确认解析结果确实落在临时目录内，否则测试可能污染真实环境
+    assert str(resolved.peft_dir).startswith(str(tmp_path)), (
+        f"peft_dir 未隔离到 tmp_path: {resolved.peft_dir}"
+    )
+    yield resolved
 
 
 @pytest.fixture
@@ -201,7 +220,7 @@ def test_run_preprocess_isolates_run_dir(paths, tmp_path):
 
     # 预置一个"别人的"文件，验证不会被删
     other_dir = paths.binidx_data / "other_run"
-    other_dir.mkdir(parents=True)
+    other_dir.mkdir(parents=True, exist_ok=True)
     keeper = other_dir / "keep.bin"
     keeper.write_text("x", encoding="utf-8")
 
