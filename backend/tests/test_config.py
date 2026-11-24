@@ -8,13 +8,13 @@ from __future__ import annotations
 import pytest
 
 from foundry.config import (
+    VOCAB_SIZE,
     AppConfig,
     InferDefaults,
     InferRuntime,
     LoggingConfig,
     ServerConfig,
     TrainDefaults,
-    VOCAB_SIZE,
 )
 
 _ENV_KEYS = (
