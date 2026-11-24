@@ -118,18 +118,42 @@ def test_build_script_rejects_invalid_recipe(recipe, paths, tmp_path):
 
 
 def test_write_script_self_contained(recipe, paths, tmp_path):
-    """脚本写进 run 目录，不写进 RWKV-PEFT。"""
+    """脚本写进 run 目录，绝不写进 RWKV-PEFT。
+
+    ## 断言方式说明（这里踩过坑）
+
+    最初写的是 `assert not (paths.peft_scripts / "lora_temp.sh").exists()`，
+    在开发机上通过，但换到实际训练机上失败——因为那个文件是旧项目
+    2026-05 留下的真实产物。这个断言依赖了外部环境状态，是坏测试。
+
+    正确做法：记录目标目录**前后**的文件集合，断言本次操作没有新增文件。
+    这样无论环境里已有什么，都能准确验证「没有再往 PEFT 写东西」。
+    """
     run_dir = tmp_path / "run"
+
+    # 记录 PEFT 目录在操作前的快照
+    before = set()
+    if paths.peft_scripts.is_dir():
+        before = {p.name for p in paths.peft_scripts.iterdir()}
+
     content = build_script(
         recipe, paths, run_dir=run_dir, base_model_path=tmp_path / "b",
         binidx_prefix=tmp_path / "t",
     )
     target = write_script(content, run_dir)
+
     assert target == run_dir / SCRIPT_NAME
     assert target.exists()
     assert os.access(target, os.X_OK)
-    # RWKV-PEFT 目录不应多出脚本
-    assert not (paths.peft_scripts / "lora_temp.sh").exists()
+
+    # 操作后不应有任何新增文件
+    after = set()
+    if paths.peft_scripts.is_dir():
+        after = {p.name for p in paths.peft_scripts.iterdir()}
+    assert after == before, f"不该往 RWKV-PEFT 写文件，却新增了: {after - before}"
+
+    # 脚本内容里也不应引用 lora_temp.sh
+    assert "lora_temp.sh" not in content
 
 
 def test_write_recipe_snapshot(recipe, tmp_path):
