@@ -1,0 +1,307 @@
+/**
+ * 流式对话 composable。
+ *
+ * 从旧版 Chat.vue（1718 行）里剥离出来的核心逻辑。旧版把 SSE 解析、
+ * thinking/answer 实时切分、参数面板、图表全塞在一个组件里，无法复用也无法测试。
+ *
+ * ## thinking 实时切分的关键
+ *
+ * 模型的原始输出是连续 token 流，形如：
+ *     <think>推理过程</think>正式回答
+ *
+ * 逐 token 到达时，我们**无法预知** `</think>` 何时出现。因此策略是：
+ *   1. 累积全部原文 rawText
+ *   2. 每次增量都从 rawText 重新解析（而不是增量拼接已解析结果）
+ *   3. 未见到 `</think>` 前，thinking 是 growing 的，answer 为 ''
+ *
+ * 第 2 点是关键。若增量拼接已切好的 thinking/answer，一旦 `</think>` 跨 chunk
+ * 到达，已经错位的分界无法回退 —— 这正是旧版「思考内容突然跳到正文」的根因。
+ *
+ * ## 为什么解析用字符串拼接而不是正则
+ *
+ * `indexOf` 是 O(n)，但每轮只调两次且 n 是本轮输出长度（通常 < 4K 字符）。
+ * 正则更慢且容易在跨 chunk 边界出错。
+ */
+
+import { computed, ref, shallowRef } from 'vue'
+import { chatApi } from '../api/chat'
+
+const THINK_START = '<' + 'think' + '>'
+const THINK_END = '<' + '/think' + '>'
+
+/**
+ * 从累积原文中切分 thinking 与 answer。
+ * @param {string} raw
+ * @returns {{thinking: string, answer: string, thinkingEnded: boolean}}
+ */
+export function splitStream(raw) {
+  const endIdx = raw.indexOf(THINK_END)
+
+  if (endIdx !== -1) {
+    let thinking = raw.slice(0, endIdx)
+    if (thinking.startsWith(THINK_START)) thinking = thinking.slice(THINK_START.length)
+    return {
+      thinking: trimEdges(thinking),
+      answer: trimEdges(raw.slice(endIdx + THINK_END.length)),
+      thinkingEnded: true,
+    }
+  }
+
+  const startIdx = raw.indexOf(THINK_START)
+  if (startIdx !== -1) {
+    return {
+      thinking: trimEdges(raw.slice(startIdx + THINK_START.length)),
+      answer: '',
+      thinkingEnded: false,
+    }
+  }
+
+  // 完全没有 think 标记：整段都是正文
+  return { thinking: '', answer: raw, thinkingEnded: false }
+}
+
+function trimEdges(s) {
+  return s.replace(/^\n+/, '').replace(/\n+$/, '')
+}
+
+/**
+ * @param {object} opts
+ * @param {() => string} opts.getModelRef 当前模型引用
+ */
+export function useChatStream({ getModelRef, getParams, getRoleId, getSessionName }) {
+  /** @type {import('vue').Ref<Array>} */
+  const messages = ref([])
+  const isStreaming = ref(false)
+  const isThinking = ref(false)
+  const error = ref('')
+  const stats = shallowRef(null)
+
+  let controller = null
+
+  const canSend = computed(() => !!getModelRef() && !isStreaming.value)
+
+  function lastAssistant() {
+    const last = messages.value[messages.value.length - 1]
+    return last && last.role === 'assistant' ? last : null
+  }
+
+  /** 把消息数组转成后端 history 格式（不含本轮用户消息） */
+  function historyPayload(exclude) {
+    const src = exclude === undefined ? messages.value : messages.value.slice(0, exclude)
+    return src
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .map((m) => ({
+        role: m.role,
+        content: m.content || '',
+        thinking: m.thinking || '',
+      }))
+  }
+
+  function beginAssistantMessage() {
+    messages.value.push({
+      role: 'assistant',
+      content: '',
+      thinking: '',
+      visibleThinking: '',
+      showThinking: true,
+      streaming: true,
+      raw: '',
+    })
+    isStreaming.value = true
+    isThinking.value = true
+    error.value = ''
+    stats.value = null
+  }
+
+  function applyChunk(chunk) {
+    const msg = lastAssistant()
+    if (!msg) return
+
+    msg.raw += chunk
+    const { thinking, answer, thinkingEnded } = splitStream(msg.raw)
+
+    msg.thinking = thinking
+    msg.content = answer
+    // 只在首次解析出内容时自动展开，之后尊重用户手动的折叠状态
+    if (thinking && msg.visibleThinking === '') msg.showThinking = true
+    msg.visibleThinking = thinking
+
+    if (thinkingEnded) isThinking.value = false
+  }
+
+  function finalize() {
+    const msg = lastAssistant()
+    if (msg) {
+      msg.streaming = false
+      delete msg.raw
+    }
+    isStreaming.value = false
+    isThinking.value = false
+    controller = null
+  }
+
+  /**
+   * 发送消息。
+   * @param {string} content
+   * @returns {Promise<boolean>} 是否成功
+   */
+  async function send(content) {
+    const text = (content || '').trim()
+    if (!text || !getModelRef() || isStreaming.value) return false
+
+    // history 必须在 push 本轮用户消息之前取
+    const history = historyPayload()
+    messages.value.push({ role: 'user', content: text })
+    beginAssistantMessage()
+
+    controller = new AbortController()
+    try {
+      await chatApi.stream(
+        {
+          modelRef: getModelRef(),
+          message: text,
+          history,
+          params: getParams(),
+          thinkingMode: !!getParams()?.thinking_mode,
+          sessionName: getSessionName?.() || '',
+          roleId: getRoleId?.() || null,
+        },
+        {
+          onContent: applyChunk,
+          onResult: (r) => {
+            stats.value = {
+              tokensFed: r.tokens_fed,
+              tokensReused: r.tokens_reused,
+              stopped: r.stopped,
+            }
+            // 后端返回的是权威切分结果，覆盖实时解析（可能因截断略有误差）
+            const msg = lastAssistant()
+            if (msg) {
+              msg.thinking = r.thinking || ''
+              msg.content = r.content || ''
+              msg.visibleThinking = msg.thinking
+            }
+          },
+          onError: (msg) => {
+            error.value = msg
+          },
+          onDone: finalize,
+          signal: controller.signal,
+        },
+      )
+    } catch (err) {
+      error.value = err.message || '发送失败'
+      finalize()
+      return false
+    }
+    return !error.value
+  }
+
+  /**
+   * 重生成最后一条回复。
+   *
+   * 语义：移除上轮 assistant 消息 → 用同一条 user 消息重发 → 后端回滚 state。
+   * 这样模型会"忘记"上一条回复，而不是在它基础上续写。
+   */
+  async function regenerate() {
+    if (isStreaming.value || messages.value.length < 2) return false
+
+    const last = messages.value[messages.value.length - 1]
+    if (last.role !== 'assistant') return false
+
+    const userMsg = messages.value[messages.value.length - 2]
+    if (userMsg.role !== 'user') return false
+
+    // 移除上轮回复，history 取到 user 消息之前的部分
+    messages.value.pop()
+    const history = historyPayload(messages.value.length - 1)
+    beginAssistantMessage()
+
+    controller = new AbortController()
+    try {
+      await chatApi.regenerate(
+        {
+          modelRef: getModelRef(),
+          message: userMsg.content,
+          history,
+          params: getParams(),
+          thinkingMode: !!getParams()?.thinking_mode,
+          sessionName: getSessionName?.() || '',
+          roleId: getRoleId?.() || null,
+        },
+        {
+          onContent: applyChunk,
+          onResult: (r) => {
+            stats.value = {
+              tokensFed: r.tokens_fed,
+              tokensReused: r.tokens_reused,
+              stopped: r.stopped,
+            }
+            const msg = lastAssistant()
+            if (msg) {
+              msg.thinking = r.thinking || ''
+              msg.content = r.content || ''
+              msg.visibleThinking = msg.thinking
+            }
+          },
+          onError: (m) => {
+            error.value = m
+          },
+          onDone: finalize,
+          signal: controller.signal,
+        },
+      )
+    } catch (err) {
+      error.value = err.message || '重生成失败'
+      finalize()
+      return false
+    }
+    return !error.value
+  }
+
+  function abort() {
+    controller?.abort()
+    controller = null
+  }
+
+  /** 清空对话并让模型忘记历史 */
+  async function clear() {
+    abort()
+    messages.value = []
+    stats.value = null
+    error.value = ''
+    const modelRef = getModelRef()
+    if (modelRef) {
+      try {
+        await chatApi.resetState(modelRef, getSessionName?.() || '')
+      } catch {
+        /* 重置失败不阻断清空 UI */
+      }
+    }
+  }
+
+  function loadMessages(list) {
+    messages.value = (list || []).map((m) => ({
+      role: m.role,
+      content: m.content || '',
+      thinking: m.thinking || '',
+      visibleThinking: m.thinking || '',
+      showThinking: false,
+      streaming: false,
+    }))
+  }
+
+  return {
+    messages,
+    isStreaming,
+    isThinking,
+    error,
+    stats,
+    canSend,
+    send,
+    regenerate,
+    abort,
+    clear,
+    loadMessages,
+  }
+}

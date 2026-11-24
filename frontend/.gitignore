@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.vite/
+*.local
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# 日志
+*.log
+npm-debug.log*
