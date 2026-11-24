@@ -34,3 +34,20 @@ class PathTraversalError(FoundryError):
 
 class PeftNotReadyError(ConfigError):
     """RWKV-PEFT 克隆不完整（缺文件或未克隆）。"""
+
+
+# ── 存储层 ───────────────────────────────────────────────────────────────
+class StorageError(FoundryError):
+    """数据库操作的基类错误。"""
+
+
+class NotFoundError(StorageError):
+    """请求的记录不存在。"""
+
+
+class ConflictError(StorageError):
+    """违反唯一约束（例如同名 run 已存在）。"""
+
+
+class MigrationError(StorageError):
+    """schema 版本不明或迁移失败。"""
