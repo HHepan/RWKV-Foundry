@@ -54,4 +54,6 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
-ignore = ["E501"]
+# B008: FastAPI 的 Depends() 必须写在参数默认值里，这是框架惯用法而非缺陷。
+# E501: 行长由 formatter 统一，不单独告警。
+ignore = ["E501", "B008"]
