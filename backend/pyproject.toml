@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rwkv-foundry"
+version = "0.1.0"
+description = "RWKV 微调与对话测试产线"
+readme = "../README.md"
+requires-python = ">=3.10"
+
+# 依赖分三层：
+#   - 基础层：Web 服务与配置，可在无 GPU 机器上安装并运行测试
+#   - train  ：训练/推理所需的 torch 生态，装的时候必须选对 CUDA 版本
+#   - dev    ：开发与测试
+#
+# 注意：torch 刻意不写进基础依赖。旧项目 requirements.txt 缺 torch 而代码顶层
+# import torch，导致装完依赖仍然启动失败。这里显式分成 extras，让「要跑训练」
+# 和「只跑 Web」两种场景各自明确。
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+train = [
+    "torch>=2.1",
+    "numpy>=1.24",
+    "lightning>=2.0",
+    "deepspeed>=0.14",
+    "triton>=2.1",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+    "ruff>=0.5",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["foundry*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
