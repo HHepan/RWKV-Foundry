@@ -450,12 +450,20 @@ class InferenceEngine:
                 occurrence=None,
             )
         except _StopGeneration:
-            # 上游兼容 StopIteration 的实现会先返回，走不到这里；
-            # 不兼容的实现会把它冒出来，此时用已有的 state 收尾。
+            # 上游兼容 StopIteration 的实现会正常返回，走不到这里；
+            # 不兼容的实现会把它冒出来，此时用已有 state 收尾。
             if filt is not None:
                 tail = filt.flush()
                 if tail and on_token is not None:
                     on_token(tail)
+                # ★ 必须返回已经生成的内容，不能返回空串。
+                #
+                # 这里修过一个真 bug：原本写死 return ""，导致
+                # 一旦 stop 序列被触发，**已经生成的那部分文本全被丢弃**。
+                # 实测表现是：续写返回空内容，用户看到一片空白。
+                #
+                # 正确做法是返回 filter 累计的安全文本 —— 那才是真正的产物。
+                return filt.emitted, state, None
             return "", state, None
         except Exception as exc:  # noqa: BLE001
             raise InferError(f"生成失败: {exc}") from exc

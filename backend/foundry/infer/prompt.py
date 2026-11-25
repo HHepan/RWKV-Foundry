@@ -280,7 +280,9 @@ COMPLETION_PRESETS: dict[str, dict] = {
             "\n"
             "Response:"
         ),
-        "stop": "",
+        # 指令式同样需要兜底：模型写完 Response 后可能自己续一个
+        # "Instruction:" 开新一轮，必须截断。
+        "stop": "\n\nInstruction",
         "inject_start": "",
         "inject_end": "",
         "hint": "Instruction / Input / Response 三段式，适合结构化写作。",
@@ -289,7 +291,10 @@ COMPLETION_PRESETS: dict[str, dict] = {
         "label": "空白",
         "description": "不加任何预设，完全自由续写",
         "prompt": "",
-        "stop": "",
+        # 兜底 stop：即便"完全自由"，也要拦住模型自问自答。
+        # 实测 blank 预设下模型会输出 "User: 他看到了什么？Assistant: …"
+        # 无限续写对话，必须有个截断点。
+        "stop": "\n\nUser",
         "inject_start": "",
         "inject_end": "",
         "hint": "从零开始，模型续写你给的任何文本。",
