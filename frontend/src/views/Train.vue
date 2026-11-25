@@ -611,4 +611,62 @@ function statusTagType(s) {
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   Train 移动端适配
+   ═══════════════════════════════════════════════════════════════════ */
+
+@media (max-width: 1099px) {
+  .config-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .right-col {
+    /* 窄屏时保存/状态面板移到上方，先看到操作入口 */
+    order: -1;
+  }
+}
+
+@media (max-width: 767px) {
+  /* 表单标签在手机上改为顶部对齐，避免左侧留 112px 空白 */
+  :deep(.el-form-item__label) {
+    float: none;
+    display: block;
+    text-align: left;
+    width: auto !important;
+    padding: 0 0 4px;
+    line-height: 1.4;
+  }
+
+  :deep(.el-form-item) {
+    display: block;
+    margin-bottom: 14px;
+  }
+
+  .panel-body {
+    padding: 12px;
+  }
+
+  /* 图表在手机上矮一些，给日志留空间 */
+  .chart-panel .chart {
+    height: 200px;
+  }
+
+  /* 日志区高度收敛 */
+  .log-body {
+    max-height: 220px;
+  }
+
+  /* tab 标签收紧 */
+  :deep(.el-tabs__item) {
+    padding: 0 12px;
+    font-size: 13px;
+  }
+
+  /* 训练记录表格横向滚动而非挤压 */
+  .panel-body :deep(.el-table) {
+    font-size: 12px;
+  }
+}
+
 </style>

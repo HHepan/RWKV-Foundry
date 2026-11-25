@@ -392,6 +392,86 @@ function roleTag(role) {
   height: 100%;
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   移动端适配
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* 平板：左侧目录栏收窄 */
+@media (max-width: 1099px) {
+  .data-layout {
+    grid-template-columns: 190px 1fr;
+    gap: 8px;
+  }
+}
+
+/* 手机：单栏，目录行变成顶部横条（文件列表横向滚动） */
+@media (max-width: 767px) {
+  .data-layout {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  /* 左侧目录栏改为横向排列的紧凑条 */
+  .side {
+    max-height: 168px;
+  }
+
+  .side-body {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    min-height: 0;
+    overflow-x: auto;
+  }
+
+  /* 下拉与按钮在手机横条里不占满宽 */
+  .side-body :deep(.el-select) {
+    width: 110px;
+    flex: 0 0 auto;
+  }
+
+  .side-body > .full {
+    width: auto;
+    flex: 0 0 auto;
+  }
+
+  /* 文件列表变成横向滚动的 chip 流 */
+  .file-list {
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    min-height: 0;
+    gap: 6px;
+  }
+
+  .file-item {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    border: 1px solid var(--foundry-border);
+  }
+
+  /* 统计栏在手机上换行排列 */
+  .stats-bar {
+    gap: 14px;
+    padding: 10px 12px;
+  }
+
+  .stats-actions {
+    margin-left: 0;
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  /* 消息行正文缩小边距 */
+  .conv-text {
+    font-size: 12.5px;
+  }
+
+  .row-card {
+    padding: 8px 10px;
+  }
+}
+
 .side {
   display: flex;
   flex-direction: column;

@@ -21,6 +21,7 @@ import { Setting } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 
 import { chatApi, defaultInferParams, roleplayParams } from '@/api/chat'
+import { useBreakpoint } from '@/composables/useBreakpoint'
 import { dataApi } from '@/api/data'
 import { useChatStream } from '@/composables/useChatStream'
 
@@ -160,6 +161,11 @@ const thinkingMode = computed({
 })
 
 const showParams = ref(false)
+
+// ── 响应式 ───────────────────────────────────────────────────────────────
+const { isMobile, needDrawer } = useBreakpoint()
+const sideDrawer = ref(false)      // 左侧会话设置抽屉
+const paramDrawer = ref(false)     // 右侧推理参数抽屉
 const showPpl = ref(true)
 const pplEl = ref(null)
 let pplChart = null
@@ -566,9 +572,13 @@ const reuseRatio = computed(() => {
 
 <template>
   <div class="chat-layout">
-    <!-- 左：会话设置 -->
-    <aside class="panel side">
-      <div class="panel-title"><span>会话</span></div>
+    <!-- 左：会话设置（窄屏时 CSS 转为抽屉浮层，DOM 不复制） -->
+    <div v-if="needDrawer && sideDrawer" class="drawer-mask" @click="sideDrawer = false" />
+    <aside class="panel side" :class="{ 'as-drawer': needDrawer, open: sideDrawer }">
+      <div class="panel-title">
+        <span>会话</span>
+        <el-button v-if="needDrawer" size="small" text @click="sideDrawer = false">×</el-button>
+      </div>
       <div class="panel-body side-body">
         <el-select v-model="selectedModel" size="small" class="full" filterable @change="onSwitchModel">
           <el-option v-for="m in modelOptions" :key="m.ref" :label="m.label" :value="m.ref" />
@@ -631,12 +641,21 @@ const reuseRatio = computed(() => {
     <section class="panel chat-panel">
       <div class="panel-title">
         <div class="title-left">
-          <span>{{ selectedModel || '未选择模型' }} <em class="dim">/ {{ sessionName }}</em></span>
+          <!-- 窄屏：两个侧栏都收进抽屉，用这两个按钮唤出 -->
+          <el-button v-if="needDrawer" size="small" text class="drawer-btn" @click="sideDrawer = true">
+            <el-icon><Setting /></el-icon>
+          </el-button>
+          <span class="model-label" :title="selectedModel">
+            {{ selectedModel || '未选择模型' }} <em class="dim">/ {{ sessionName }}</em>
+          </span>
           <el-radio-group :model-value="mode" size="small" class="mode-switch" @update:model-value="switchMode">
             <el-radio-button value="chat">对话</el-radio-button>
             <el-radio-button value="completion">续写</el-radio-button>
           </el-radio-group>
         </div>
+        <el-button v-if="needDrawer" size="small" text class="drawer-btn" @click="paramDrawer = true">
+          <el-icon><Odometer /></el-icon>
+        </el-button>
         <div v-if="mode === 'chat'" class="head-actions">
           <el-tooltip content="整段历史 + 本轮消息重新生成，后端会回滚 state">
             <el-button size="small" text :disabled="isStreaming || messages.length < 2" @click="onRegenerate">
@@ -767,11 +786,15 @@ const reuseRatio = computed(() => {
       </div>
     </section>
 
-    <!-- 右：推理参数 -->
-    <aside class="panel param-panel">
+    <!-- 右：推理参数（窄屏同样转抽屉浮层） -->
+    <div v-if="needDrawer && paramDrawer" class="drawer-mask" @click="paramDrawer = false" />
+    <aside class="panel param-panel" :class="{ 'as-drawer': needDrawer, open: paramDrawer }">
       <div class="panel-title">
         <span>推理参数</span>
-        <el-button size="small" text @click="saveParams">应用</el-button>
+        <div class="title-actions">
+          <el-button size="small" text @click="saveParams">应用</el-button>
+          <el-button v-if="needDrawer" size="small" text @click="paramDrawer = false">×</el-button>
+        </div>
       </div>
 
       <div class="param-body">
@@ -1321,4 +1344,113 @@ const reuseRatio = computed(() => {
   overflow-y: auto;
   font-family: inherit;
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   Chat 移动端适配
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* 模型名在窄屏可能很长，允许收缩 */
+.model-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.drawer-btn {
+  flex: 0 0 auto;
+  padding: 4px 6px;
+}
+
+.title-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* 抽屉遮罩：点击空白处关闭 */
+.drawer-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 3000;
+}
+
+/*
+ * 窄屏：侧栏从「栅格列」变成「浮层抽屉」。
+ *
+ * 关键在 position:fixed + z-index，配合 .drawer-mask 实现遮罩点击关闭。
+ * 这样 DOM 完全不用复制 —— 桌面和移动共用同一份模板，
+ * 只是定位方式不同。旧项目那套 mobile/ 目录就是复制出来的，维护成本翻倍。
+ */
+.as-drawer {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  z-index: 3001;
+  width: min(86vw, 340px);
+  border-radius: 0;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.32);
+  transition: transform 0.24s ease;
+  overflow: hidden;
+}
+
+.side.as-drawer {
+  left: 0;
+  transform: translateX(-102%);
+}
+
+.side.as-drawer.open {
+  transform: translateX(0);
+}
+
+.param-panel.as-drawer {
+  right: 0;
+  transform: translateX(102%);
+}
+
+.param-panel.as-drawer.open {
+  transform: translateX(0);
+}
+
+@media (max-width: 1099px) {
+  .chat-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 767px) {
+  .chat-layout {
+    gap: 8px;
+  }
+
+  .messages {
+    padding: 10px;
+    gap: 10px;
+  }
+
+  .msg-role {
+    flex: 0 0 28px;
+    font-size: 10px;
+  }
+
+  .msg-text {
+    font-size: 14px;
+    line-height: 1.65;
+  }
+
+  .completion-area :deep(.el-textarea__inner) {
+    font-size: 12.5px;
+  }
+
+  .param-body {
+    padding: 10px;
+  }
+
+  .mode-switch :deep(.el-radio-button__inner) {
+    padding: 5px 10px;
+    font-size: 12px;
+  }
+}
+
 </style>

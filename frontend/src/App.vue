@@ -1,11 +1,23 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { metaApi } from '@/api/chat'
+import { useBreakpoint } from '@/composables/useBreakpoint'
 
 const route = useRoute()
+const router = useRouter()
 const health = ref(null)
 const healthError = ref('')
+
+// 响应式：窄屏时侧栏转抽屉
+const { isMobile, needDrawer } = useBreakpoint()
+const drawerOpen = ref(false)
+
+/** 移动端点导航后自动收起抽屉 */
+const go = (path) => {
+  drawerOpen.value = false
+  router.push(path)
+}
 
 const title = computed(() => route.meta.title || 'RWKV-Foundry')
 
@@ -68,7 +80,14 @@ const navs = [
 
 <template>
   <el-container class="app-shell">
-    <el-aside width="208px" class="app-aside">
+    <!--
+      响应式侧栏：
+        ≥1100px  常驻侧栏
+        <1100px  转抽屉（点击汉堡按钮滑出）
+
+      同一套 nav 内容，只是容器不同 —— 不复制组件。
+    -->
+    <el-aside v-if="!needDrawer" width="208px" class="app-aside">
       <div class="brand">
         <div class="brand-mark">F</div>
         <div class="brand-text">
@@ -103,8 +122,60 @@ const navs = [
       </div>
     </el-aside>
 
+    <!-- 抽屉版侧栏 -->
+    <el-drawer
+      v-model="drawerOpen"
+      direction="ltr"
+      size="240px"
+      :with-header="false"
+      class="app-drawer"
+    >
+      <div class="drawer-inner">
+        <div class="brand">
+          <div class="brand-mark">F</div>
+          <div class="brand-text">
+            <strong>RWKV-Foundry</strong>
+            <small>铸造厂</small>
+          </div>
+        </div>
+
+        <nav class="nav">
+          <button
+            v-for="n in navs"
+            :key="n.path"
+            type="button"
+            class="nav-item drawer-item"
+            :class="{ active: route.path === n.path }"
+            @click="go(n.path)"
+          >
+            <el-icon><component :is="n.icon" /></el-icon>
+            <span>{{ n.label }}</span>
+          </button>
+        </nav>
+
+        <div class="aside-foot">
+          <el-tag :type="modelBadge.type" size="small" effect="dark" round class="foot-tag">
+            {{ modelBadge.text }}
+          </el-tag>
+          <el-tag v-if="trainBadge" :type="trainBadge.type" size="small" effect="dark" round class="foot-tag">
+            {{ trainBadge.text }}
+          </el-tag>
+        </div>
+      </div>
+    </el-drawer>
+
     <el-container>
       <el-header class="app-header">
+        <!-- 窄屏显示汉堡按钮 -->
+        <el-button
+          v-if="needDrawer"
+          class="hamburger"
+          size="small"
+          text
+          @click="drawerOpen = true"
+        >
+          <el-icon><Menu /></el-icon>
+        </el-button>
         <span class="header-title">{{ title }}</span>
         <slot name="header-actions" />
       </el-header>
@@ -246,4 +317,101 @@ const navs = [
   padding: 16px;
   overflow: auto;
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   移动端适配
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* 汉堡按钮 */
+.hamburger {
+  margin-right: 8px;
+  font-size: 18px;
+}
+
+/* 抽屉内部布局（复用桌面侧栏的结构与颜色） */
+.drawer-inner {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #171b26;
+}
+
+/* 抽屉里的导航项是 button，需去掉默认样式 */
+.drawer-item {
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.drawer-item.active {
+  background: #262c3d;
+  color: #ff8a5c;
+  font-weight: 600;
+}
+
+/* Element Plus 抽屉默认有白底，这里覆盖为深色，与侧栏统一 */
+:deep(.app-drawer .el-drawer__body) {
+  padding: 0;
+  background: #171b26;
+}
+
+/* ── 平板 / 窄屏桌面 ─────────────────────────────────────────────── */
+@media (max-width: 1099px) {
+  .app-header {
+    height: 52px;
+    padding: 0 12px;
+  }
+
+  .app-main {
+    padding: 10px;
+  }
+}
+
+/* ── 手机 ────────────────────────────────────────────────────────── */
+@media (max-width: 767px) {
+  .app-header {
+    height: 48px;
+    padding: 0 10px;
+  }
+
+  .header-title {
+    font-size: 14px;
+  }
+
+  /* 手机上内容区贴边，节省横向空间 */
+  .app-main {
+    padding: 8px;
+    /* 底部留出安全区（iPhone 刘海屏 / 手势条） */
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* 手机上滑块/输入框点击区域要够大 */
+  :deep(.el-button--small) {
+    min-height: 32px;
+    padding: 6px 12px;
+  }
+
+  /* 弹窗在手机上接近全屏 */
+  :deep(.el-dialog) {
+    width: 92vw !important;
+    margin-top: 4vh !important;
+  }
+
+  :deep(.el-dialog__body) {
+    max-height: 70vh;
+    overflow-y: auto;
+  }
+}
+
+/* 横屏手机：进一步压缩头部 */
+@media (max-width: 900px) and (orientation: landscape) {
+  .app-header {
+    height: 44px;
+  }
+}
+
 </style>
