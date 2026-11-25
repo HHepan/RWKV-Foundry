@@ -142,6 +142,88 @@ def build_prompt(
     return "".join(parts)
 
 
+# ── 续写模式 ────────────────────────────────────────────────────────────
+#
+# 续写与对话是两种不同的用法，prompt 结构完全不同：
+#
+#   对话:   User: xxx  Assistant: yyy  User: zzz  Assistant: <生成>
+#   续写:   <原文文本……>                          <模型直接接着写>
+#
+# 续写**不加任何 User/Assistant 模板**，也不加 presystem 前缀——那些是
+# 对话格式的一部分，塞进续写会污染文风，模型会开始模仿"助手"腔调，
+# 而不是延续原文的叙事风格。
+#
+# 这也是 RWKV 作为 base model 的天然优势：它本身就是文档续写器，
+# 不需要包装成问答格式。
+
+#: 续写场景预设。prompt_prefix 会拼在用户输入之前，用于设定体裁与基调。
+#:
+#: 这些不是 RWKV-Runner 的原样拷贝——Runner 用的是预设文件系统，
+#: 结构复杂。这里提炼出它的核心思路：给模型一个体裁锚点，
+#: 让续写方向可控，而不是让它自由发散。
+COMPLETION_PRESETS: dict[str, dict[str, str]] = {
+    "novel": {
+        "label": "小说续写",
+        "description": "延续小说的叙事、人物与文风",
+        "prompt_prefix": "",
+        "hint": "把小说已有段落贴进来，模型会接着往下写。",
+    },
+    "scene": {
+        "label": "情景续写",
+        "description": "围绕一个场景继续展开描写",
+        "prompt_prefix": "",
+        "hint": "贴入场景描写，模型会补充环境、动作与氛围。",
+    },
+    "story": {
+        "label": "操作故事续写",
+        "description": "按已有情节推进故事发展",
+        "prompt_prefix": "",
+        "hint": "贴入故事开头或当前段落，模型会推进情节。",
+    },
+}
+
+
+def build_completion_prompt(
+    text: str,
+    *,
+    preset: str = "novel",
+    system_content: str | None = None,
+) -> str:
+    """构建续写 prompt。
+
+    与 ``build_prompt`` 的区别：
+
+      - **不加** ``User:`` / ``Assistant:`` 模板
+      - **不加** ``presystem`` 示范对话前缀（那是对话专用）
+      - 原文原样作为 prompt，模型在其后直接续写
+      - 可选的角色卡（system）以 ``System:`` 段置于最前
+
+    ## 为什么角色卡仍用 System 段
+
+    续写时若设定「你是古龙风格的武侠小说家」，需要让模型知道这个约束。
+    用 ``System:`` 段而不是散文式说明，是因为 RWKV 训练数据里
+    ``System:`` 是明确的分隔标记，模型认得这个结构。
+
+    :param text: 用户提供的待续写原文
+    :param preset: 预设场景 key（当前不影响输出，保留用于未来扩展）
+    :param system_content: 可选的风格/角色设定
+    """
+    parts: list[str] = []
+
+    if system_content:
+        parts.append(f"System: {system_content}\n\n")
+
+    # 原文原样保留：续写的全部上下文就在这段文本里
+    parts.append(text)
+
+    # 结尾补一个换行，避免模型把最后一行与续写内容粘在一起。
+    # 若原文本身以换行结尾则不重复添加。
+    if not parts[-1].endswith("\n"):
+        parts.append("\n")
+
+    return "".join(parts)
+
+
 def split_thinking(raw: str) -> tuple[str, str]:
     """把模型原始输出切分为 (thinking, answer)。
 

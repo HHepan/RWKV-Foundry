@@ -74,6 +74,36 @@ export const chatApi = {
       handlers,
     ),
 
+  /**
+   * 续写：给定原文，让模型接着写。
+   *
+   * 与 stream() 的关键差异：不收"提问"，收的是待续写的文本本身。
+   * 后端不会把它包成 User:/Assistant: 模板 —— 那会让模型改用助手腔，
+   * 而不是延续原文的文风。
+   *
+   * @param {object} p
+   * @param {string} p.modelRef
+   * @param {string} p.text      待续写的原文
+   * @param {'novel'|'scene'|'story'} [p.preset]
+   */
+  complete: ({ modelRef, text, preset, params, thinkingMode, sessionName, roleId }, handlers) =>
+    streamSSE(
+      '/api/chat/complete',
+      {
+        model_ref: modelRef,
+        text,
+        preset: preset || 'novel',
+        params,
+        thinking_mode: thinkingMode,
+        session_name: sessionName,
+        role_id: roleId,
+      },
+      handlers,
+    ),
+
+  /** 获取续写场景预设 */
+  completionPresets: () => http.get('/api/chat/completion-presets'),
+
   /** 重生成：后端会先回滚 state，让模型"忘记"上一轮回复 */
   regenerate: ({ modelRef, message, history, params, thinkingMode, sessionName, roleId }, handlers) =>
     streamSSE(

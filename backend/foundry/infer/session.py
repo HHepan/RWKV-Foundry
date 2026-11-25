@@ -298,6 +298,7 @@ class InferenceEngine:
         on_token: Callable[[str], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
         rollback: bool = False,
+        raw_prompt: str | None = None,
     ) -> GenResult:
         """生成回复。
 
@@ -310,6 +311,10 @@ class InferenceEngine:
         :param params: 本次生成使用的参数
         :param rollback: 重生成时先回滚到上一轮生成前的 state
         :param should_stop: 前端断开时返回 True，尽早退出
+        :param raw_prompt: **续写模式**。给定时直接用它作为 prompt，
+            完全跳过 ``history`` / ``user_message`` / 对话模板。
+            续写不需要 ``User:``/``Assistant:`` 结构 —— 那样会污染文风，
+            模型会开始模仿助手腔调而不是延续原文叙事。
         """
         pipeline = self._require_pipeline()
         params.validate()
@@ -325,8 +330,12 @@ class InferenceEngine:
             if rollback:
                 session.rollback()
 
-            messages = [*history, ChatMessage(role="user", content=user_message)]
-            prompt = build_prompt(messages, params=params, thinking_mode=thinking_mode)
+            if raw_prompt is not None:
+                # 续写：原文即 prompt，不经任何对话模板
+                prompt = raw_prompt
+            else:
+                messages = [*history, ChatMessage(role="user", content=user_message)]
+                prompt = build_prompt(messages, params=params, thinking_mode=thinking_mode)
 
             # ── 增量 prefill ────────────────────────────────────────────
             from foundry.infer.prefill import plan_prefill

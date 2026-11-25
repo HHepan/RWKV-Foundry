@@ -206,6 +206,25 @@ class ChatRequest(BaseModel):
     role_id: str | None = None
 
 
+class CompletionRequest(BaseModel):
+    """续写请求。
+
+    ``text`` 是待续写的原文，**不是用户提问**。后端不会把它包成
+    ``User: ...`` —— 续写直接以原文为 prompt，让模型接着写。
+    """
+
+    model_ref: str
+    text: str
+    preset: str = Field(
+        default="novel",
+        description="场景预设: novel(小说) / scene(情景) / story(故事)",
+    )
+    params: dict[str, Any] = Field(default_factory=dict)
+    thinking_mode: bool = False
+    session_name: str = ""
+    role_id: str | None = None
+
+
 class ChatResultResponse(BaseModel):
     content: str
     thinking: str

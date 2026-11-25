@@ -35,7 +35,7 @@ from foundry.domain.dataset import (
 from foundry.domain.recipe import Recipe, RecipeError
 from foundry.errors import ConflictError, FoundryError, NotFoundError
 from foundry.infer.params import InferParams
-from foundry.infer.prompt import ChatMessage
+from foundry.infer.prompt import ChatMessage, build_completion_prompt
 from foundry.paths import safe_join, safe_name
 from foundry.storage import ingest, repo
 from foundry.train.job import TrainError, TrainJob
@@ -709,6 +709,67 @@ def regenerate(state: AppState, **kwargs) -> dict:
         should_stop=should_stop,
         rollback=True,
     )
+    return result.as_dict()
+
+
+def complete(
+    state: AppState,
+    *,
+    model_ref: str,
+    text: str,
+    preset: str = "novel",
+    params: dict,
+    thinking_mode: bool = False,
+    session_name: str = "",
+    role_id: str | None = None,
+    on_token=None,
+    should_stop=None,
+) -> dict:
+    """续写模式。
+
+    ## 与 chat() 的本质差异
+
+    续写**不使用对话模板**：不拼接 ``User:`` / ``Assistant:``，
+    也不注入 presystem 示范前缀。原文直接作为 prompt，模型在其后接着写。
+
+    为什么这一点关键：对话模板会污染文风。若把小说段落包成
+    ``User: <小说段落>`` / ``Assistant:``，模型会返回"好的，我来帮你续写……"
+    这种助手腔，而不是延续小说的叙事。RWKV 是 base model，
+    它天生就是文档续写器，不需要包装成问答。
+
+    ## 续写不复用会话 state
+
+    对话的 state 累积的是问答历史，续写需要的是干净的原文上下文。
+    两者混用会导致模型看到"上一段对话 + 这段小说"的混乱前缀。
+    因此续写用独立的 session_key，且每次从空 state 开始。
+    """
+    ensure_model_loaded(state, model_ref)
+    infer_params = InferParams.from_dict(params).validate()
+
+    if not text.strip():
+        raise ServiceError("续写内容不能为空")
+
+    role_content = _load_role_content(state, role_id)
+    prompt = build_completion_prompt(text, preset=preset, system_content=role_content)
+
+    # 独立 session：与对话 state 隔离，避免前缀污染
+    session_key = f"__completion__|{model_ref}|{session_name}"
+
+    # 每次续写都从干净状态开始 —— 续写的上下文就是本次原文，
+    # 累积历史只会让模型看到越来越长的无关前缀。
+    state.engine.reset_session(session_key)
+
+    result = state.engine.generate(
+        session_key=session_key,
+        user_message="",              # 续写不用，走 raw_prompt
+        history=[],
+        params=infer_params,
+        thinking_mode=thinking_mode,
+        on_token=on_token,
+        should_stop=should_stop,
+        raw_prompt=prompt,
+    )
+
     return result.as_dict()
 
 

@@ -199,6 +199,88 @@ export function useChatStream({ getModelRef, getParams, getRoleId, getSessionNam
   }
 
   /**
+   * 续写：把给定原文交给模型接着写。
+   *
+   * ## 与 send() 的差别
+   *
+   * send() 是"提问—回答"：原文被包成 ``User:``，模型以 ``Assistant:`` 作答。
+   * complete() 是"文档接续"：原文直接作为 prompt，模型在其后natural继续。
+   *
+   * 因此续写**不往 messages 里塞 user 消息**（那会让界面显示成你在提问），
+   * 而是塞一条带 ``kind: 'completion'`` 标记的 assistant 消息，
+   * 并把原文放在 ``source`` 里供界面折叠展示。
+   *
+   * @param {string} text  待续写的原文
+   * @param {object} opts
+   * @param {'novel'|'scene'|'story'} [opts.preset]
+   * @returns {Promise<boolean>}
+   */
+  async function complete(text, { preset = 'novel' } = {}) {
+    const src = (text || '').trim()
+    if (!src || !getModelRef() || isStreaming.value) return false
+
+    // 续写产物单独一条消息，原文挂在 source 上（界面可折叠显示）
+    messages.value.push({
+      role: 'assistant',
+      content: '',
+      thinking: '',
+      visibleThinking: '',
+      showThinking: true,
+      streaming: true,
+      raw: '',
+      kind: 'completion',
+      source: src,
+      preset,
+      showSource: false,
+    })
+    isStreaming.value = true
+    isThinking.value = true
+    error.value = ''
+    stats.value = null
+
+    controller = new AbortController()
+    try {
+      await chatApi.complete(
+        {
+          modelRef: getModelRef(),
+          text: src,
+          preset,
+          params: getParams(),
+          thinkingMode: !!getParams()?.thinking_mode,
+          sessionName: getSessionName?.() || '',
+          roleId: getRoleId?.() || null,
+        },
+        {
+          onContent: applyChunk,
+          onResult: (r) => {
+            stats.value = {
+              tokensFed: r.tokens_fed,
+              tokensReused: r.tokens_reused,
+              stopped: r.stopped,
+            }
+            const msg = lastAssistant()
+            if (msg) {
+              msg.thinking = r.thinking || ''
+              msg.content = r.content || ''
+              msg.visibleThinking = msg.thinking
+            }
+          },
+          onError: (m) => {
+            error.value = m
+          },
+          onDone: finalize,
+          signal: controller.signal,
+        },
+      )
+    } catch (err) {
+      error.value = err.message || '续写失败'
+      finalize()
+      return false
+    }
+    return !error.value
+  }
+
+  /**
    * 重生成最后一条回复。
    *
    * 语义：移除上轮 assistant 消息 → 用同一条 user 消息重发 → 后端回滚 state。
@@ -337,6 +419,7 @@ export function useChatStream({ getModelRef, getParams, getRoleId, getSessionNam
     stats,
     canSend,
     send,
+    complete,
     regenerate,
     abort,
     clear,

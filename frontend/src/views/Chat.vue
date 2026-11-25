@@ -47,13 +47,28 @@ const currentRoleContent = computed(() => {
 const params = ref(defaultInferParams())
 const roleId = computed(() => (selectedRole.value === 'none' ? null : selectedRole.value))
 
-const { messages, isStreaming, isThinking, error, stats, canSend, send, regenerate, abort, clear, loadMessages } =
+const { messages, isStreaming, isThinking, error, stats, canSend, send, complete, regenerate, abort, clear, loadMessages } =
   useChatStream({
     getModelRef: () => selectedModel.value,
     getParams: () => params.value,
     getRoleId: () => roleId.value,
     getSessionName: () => sessionName.value,
   })
+
+// ── 模式：对话 / 续写 ────────────────────────────────────────────────────
+const mode = ref('chat')
+const completionText = ref('')
+const completionPreset = ref('novel')
+
+const COMPLETION_PRESETS = [
+  { key: 'novel', label: '小说续写', hint: '贴入小说已有段落，模型接着往下写' },
+  { key: 'scene', label: '情景续写', hint: '贴入场景描写，模型补充环境、动作与氛围' },
+  { key: 'story', label: '故事续写', hint: '贴入故事段落，模型推进情节发展' },
+]
+
+const currentPresetHint = computed(
+  () => COMPLETION_PRESETS.find((p) => p.key === completionPreset.value)?.hint || '',
+)
 
 const userInput = ref('')
 const messagesEl = ref(null)
@@ -154,11 +169,32 @@ function scrollToBottom() {
 watch(messages, scrollToBottom, { deep: true })
 
 async function onSend() {
+  if (mode.value === 'completion') {
+    const src = completionText.value.trim()
+    if (!src) {
+      ElMessage.warning('请贴入需要续写的原文')
+      return
+    }
+    const ok = await complete(src, { preset: completionPreset.value })
+    if (!ok && error.value) ElMessage.error(error.value)
+    return
+  }
+
   const text = userInput.value.trim()
   if (!text) return
   userInput.value = ''
   const ok = await send(text)
   if (!ok && error.value) ElMessage.error(error.value)
+}
+
+/** 切换模式时清空提示，避免把对话报错带到续写界面 */
+function switchMode(m) {
+  if (isStreaming.value) {
+    ElMessage.warning('生成中，请先中止或等待完成')
+    return
+  }
+  mode.value = m
+  error.value = ''
 }
 
 function onKeydown(e) {
@@ -430,7 +466,13 @@ const reuseRatio = computed(() => {
     <!-- 中：对话 -->
     <section class="panel chat-panel">
       <div class="panel-title">
-        <span>{{ selectedModel || '未选择模型' }} <em class="dim">/ {{ sessionName }}</em></span>
+        <div class="title-left">
+          <span>{{ selectedModel || '未选择模型' }} <em class="dim">/ {{ sessionName }}</em></span>
+          <el-radio-group :model-value="mode" size="small" class="mode-switch" @update:model-value="switchMode">
+            <el-radio-button value="chat">对话</el-radio-button>
+            <el-radio-button value="completion">续写</el-radio-button>
+          </el-radio-group>
+        </div>
         <div class="head-actions">
           <el-tooltip content="整段历史 + 本轮消息重新生成，后端会回滚 state">
             <el-button size="small" text :disabled="isStreaming || messages.length < 2" @click="onRegenerate">
@@ -444,12 +486,23 @@ const reuseRatio = computed(() => {
       </div>
 
       <div ref="messagesEl" class="messages">
-        <p v-if="!messages.length" class="empty-hint">开始一段新对话</p>
+        <p v-if="!messages.length" class="empty-hint">
+          {{ mode === 'completion' ? '在下方贴入原文，点「续写」开始' : '开始一段新对话' }}
+        </p>
 
         <div v-for="(m, i) in messages" :key="i" class="msg" :class="m.role">
           <div class="msg-role">{{ m.role === 'user' ? '你' : '模型' }}</div>
 
           <div class="msg-body">
+            <!-- 续写：原文折叠区 -->
+            <div v-if="m.kind === 'completion' && m.source" class="source-block">
+              <button class="source-toggle" @click="m.showSource = !m.showSource">
+                <el-icon><component :is="m.showSource ? 'ArrowDown' : 'ArrowRight'" /></el-icon>
+                <span>续写原文（{{ m.source.length }} 字）</span>
+              </button>
+              <pre v-if="m.showSource" class="source-text">{{ m.source }}</pre>
+            </div>
+
             <!-- thinking 折叠区 -->
             <div v-if="m.role === 'assistant' && (m.thinking || (isThinking && i === messages.length - 1))" class="think-block">
               <button class="think-toggle" @click="m.showThinking = !m.showThinking">
@@ -468,22 +521,67 @@ const reuseRatio = computed(() => {
       <div v-if="error" class="error-bar">{{ error }}</div>
 
       <div class="composer">
-        <el-input
-          v-model="userInput"
-          type="textarea"
-          :rows="3"
-          resize="none"
-          placeholder="输入消息，Enter 发送，Shift+Enter 换行"
-          :disabled="!selectedModel"
-          @keydown="onKeydown"
-        />
+        <!-- 对话模式 -->
+        <template v-if="mode === 'chat'">
+          <el-input
+            v-model="userInput"
+            type="textarea"
+            :rows="3"
+            resize="none"
+            placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+            :disabled="!selectedModel"
+            @keydown="onKeydown"
+          />
+        </template>
+
+        <!-- 续写模式 -->
+        <template v-else>
+          <div class="completion-bar">
+            <el-select v-model="completionPreset" size="small" class="preset-select">
+              <el-option
+                v-for="p in COMPLETION_PRESETS"
+                :key="p.key"
+                :label="p.label"
+                :value="p.key"
+              />
+            </el-select>
+            <span class="hint preset-hint">{{ currentPresetHint }}</span>
+            <el-button size="small" text @click="completionText = ''" :disabled="!completionText">
+              清空原文
+            </el-button>
+          </div>
+          <el-input
+            v-model="completionText"
+            type="textarea"
+            :rows="6"
+            resize="none"
+            placeholder="把需要续写的原文贴进来（小说段落 / 场景描写 / 故事情节）…"
+            :disabled="!selectedModel"
+          />
+        </template>
+
         <div class="composer-actions">
           <span class="hint">
             {{ thinkingMode ? '思考模式开启' : '普通模式' }}
           </span>
           <el-button v-if="isStreaming" size="small" @click="abort">中止</el-button>
-          <el-button type="primary" size="small" :disabled="!canSend || !userInput.trim()" @click="onSend">
+          <el-button
+            v-if="mode === 'chat'"
+            type="primary"
+            size="small"
+            :disabled="!canSend || !userInput.trim()"
+            @click="onSend"
+          >
             发送
+          </el-button>
+          <el-button
+            v-else
+            type="primary"
+            size="small"
+            :disabled="!canSend || !completionText.trim()"
+            @click="onSend"
+          >
+            续写
           </el-button>
         </div>
       </div>
@@ -940,5 +1038,69 @@ const reuseRatio = computed(() => {
   gap: 8px;
   margin-top: auto;
   padding-top: 10px;
+}
+
+/* ── 模式切换 ─────────────────────────────────────────────────────────── */
+.title-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.mode-switch {
+  flex: 0 0 auto;
+}
+
+/* ── 续写输入区 ───────────────────────────────────────────────────────── */
+.completion-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.preset-select {
+  width: 132px;
+  flex: 0 0 auto;
+}
+
+.preset-hint {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 续写原文折叠区 */
+.source-block {
+  margin-bottom: 6px;
+  border-left: 2px solid #c7d2e0;
+  padding-left: 10px;
+}
+
+.source-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  color: var(--foundry-text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.source-text {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: #6b7280;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+  font-family: inherit;
 }
 </style>

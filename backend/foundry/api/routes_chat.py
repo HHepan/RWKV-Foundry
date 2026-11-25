@@ -43,6 +43,7 @@ from foundry.api import service
 from foundry.api.deps import AppState, get_state
 from foundry.api.schemas import (
     ChatRequest,
+    CompletionRequest,
     SessionCreateRequest,
     SessionResponse,
 )
@@ -131,6 +132,91 @@ async def _run_stream(
         cancel.set()
 
     yield "data: [DONE]\n\n"
+
+
+async def _run_completion_stream(
+    state: AppState,
+    request: CompletionRequest,
+) -> AsyncIterator[str]:
+    """续写的 SSE 流。结构与 _run_stream 一致，但走 service.complete()。
+
+    刻意不复用 _run_stream：那个函数绑死 ChatRequest 且内部区分
+    regenerate 分支，硬塞第三种模式会让它变成一堆 if。
+    续写的输入语义本来就不同（原文 vs 提问），单独一条更清楚。
+    """
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[Any] = asyncio.Queue()
+    cancel = threading.Event()
+
+    def emit(item: Any) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, item)
+
+    def on_token(chunk: str) -> None:
+        emit({"content": chunk})
+
+    def worker() -> None:
+        try:
+            result = service.complete(
+                state,
+                model_ref=request.model_ref,
+                text=request.text,
+                preset=request.preset,
+                params=request.params,
+                thinking_mode=request.thinking_mode,
+                session_name=request.session_name,
+                role_id=request.role_id,
+                on_token=on_token,
+                should_stop=cancel.is_set,
+            )
+            emit({"result": result})
+        except Exception as exc:  # noqa: BLE001
+            emit({"error": str(exc)})
+        finally:
+            emit(_STOP)
+
+    threading.Thread(target=worker, daemon=True, name="foundry-complete").start()
+
+    try:
+        while True:
+            item = await queue.get()
+            if item is _STOP:
+                break
+            yield _sse(item)
+    except asyncio.CancelledError:
+        cancel.set()
+        raise
+    finally:
+        cancel.set()
+
+    yield "data: [DONE]\n\n"
+
+
+@router.post("/complete")
+async def complete(
+    request: CompletionRequest, state: AppState = Depends(get_state)
+) -> StreamingResponse:
+    """续写：给定原文，让模型接着写。
+
+    与 /chat 的语义差别：不收 "提问"，收的是待续写的文本本身。
+    不使用 User/Assistant 模板（那会让模型返回助手腔而非延续文风）。
+    """
+    return StreamingResponse(
+        _run_completion_stream(state, request),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/completion-presets")
+def completion_presets() -> dict:
+    """续写场景预设列表，供前端渲染下拉框。"""
+    from foundry.infer.prompt import COMPLETION_PRESETS
+
+    return {"presets": COMPLETION_PRESETS}
 
 
 @router.post("/chat")
