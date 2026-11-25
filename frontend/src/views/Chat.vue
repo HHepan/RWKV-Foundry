@@ -1446,6 +1446,49 @@ const reuseRatio = computed(() => {
 @media (max-width: 767px) {
   .chat-layout {
     gap: 8px;
+    /* grid 项同样要 min-width:0，否则 1fr 被内容撑开 */
+    min-width: 0;
+  }
+
+  .chat-layout > * {
+    min-width: 0;
+  }
+
+  /*
+   * 手机上头部空间只有 390px 左右，
+   * 「齿轮 + 模型名 + 模式切换 + 仪表」一排摆不下。
+   * 让 title-left 换行：模型名占一行，模式切换落到第二行。
+   */
+  .chat-panel .panel-title {
+    flex-wrap: wrap;
+    row-gap: 6px;
+    padding: 10px 12px;
+  }
+
+  .title-left {
+    flex-wrap: wrap;
+    gap: 8px;
+    flex: 1 1 100%;
+  }
+
+  .model-label {
+    flex: 1 1 auto;
+    max-width: calc(100% - 90px);
+  }
+
+  .mode-switch {
+    flex: 1 1 100%;
+    display: flex;
+  }
+
+  .mode-switch :deep(.el-radio-button) {
+    flex: 1;
+  }
+
+  .mode-switch :deep(.el-radio-button__inner) {
+    width: 100%;
+    padding: 5px 10px;
+    font-size: 12px;
   }
 
   .messages {
@@ -1471,10 +1514,6 @@ const reuseRatio = computed(() => {
     padding: 10px;
   }
 
-  .mode-switch :deep(.el-radio-button__inner) {
-    padding: 5px 10px;
-    font-size: 12px;
-  }
 }
 
 </style>

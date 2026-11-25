@@ -36,6 +36,17 @@ body {
   background: var(--foundry-panel);
   border: 1px solid var(--foundry-border);
   border-radius: 10px;
+  /*
+   * min-width:0 必须显式声明。
+   *
+   * .panel 是 CSS Grid 的直接子项，而 grid 项的默认值是 min-width:auto，
+   * 意思是「不小于内容的固有宽度」。当内部有长文本/固定宽按钮组时，
+   * 1fr 列会被内容撑开 —— 实测手机端 panel 宽度 660px 而视口仅 390px，
+   * 整页因此出现横向滚动条。
+   *
+   * 只有 min-width:0 才能让 1fr 真正按可用空间收缩。
+   */
+  min-width: 0;
 }
 
 .panel-title {
