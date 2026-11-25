@@ -8,15 +8,46 @@ const health = ref(null)
 const healthError = ref('')
 
 const title = computed(() => route.meta.title || 'RWKV-Foundry')
+
+/**
+ * 把模型引用压成短标识。
+ *
+ * 侧栏只有 208px，而模型引用形如：
+ *   base_models/rwkv7-g1g-13.3b-20260523-ctx8192
+ * 完整显示会撑出横向滚动条。
+ *
+ * 抽取策略：
+ *   1. 去掉 base_models/ 或 checkpoints 目录前缀
+ *   2. 从 rwkv7-g1g-13.3b-20260523-ctx8192 里抓 "尺寸" 段（13.3b / 2.9b）
+ *   3. 保留前面的版本代号（g1g）便于区分
+ *
+ * 例：base_models/rwkv7-g1g-13.3b-20260523-ctx8192 → rwkv7-g1g-13.3b
+ */
+function shortenModelRef(ref) {
+  if (!ref) return ''
+  const bare = ref.replace(/^[^/]+\//, '').replace(/\.pth$/, '')
+
+  // 匹配 rwkv7-g1g-13.3b-... 中的 m 段
+  const m = bare.match(/(rwkv\d*-?[a-z0-9]*)-(\d+\.?\d*[bm])/i)
+  if (m) return `${m[1]}-${m[2]}`
+
+  // 回退：取第一二段
+  const parts = bare.split('-')
+  return parts.length > 2 ? parts.slice(0, 2).join('-') : bare
+}
+
 const modelBadge = computed(() => {
   if (!health.value) return { text: '未连接', type: 'info' }
   if (health.value.model_loaded) {
-    return { text: `已加载 ${health.value.model_ref || ''}`, type: 'success' }
+    return { text: shortenModelRef(health.value.model_ref) || '已加载', type: 'success' }
   }
   return { text: '未加载模型', type: 'info' }
 })
+
 const trainBadge = computed(() => {
-  if (health.value?.active_train) return { text: `训练中 ${health.value.active_train}`, type: 'warning' }
+  if (health.value?.active_train) {
+    return { text: `训练中 ${health.value.active_train}`, type: 'warning' }
+  }
   return null
 })
 
@@ -60,10 +91,12 @@ const navs = [
       </nav>
 
       <div class="aside-foot">
-        <el-tag :type="modelBadge.type" size="small" effect="dark" round>
-          {{ modelBadge.text }}
-        </el-tag>
-        <el-tag v-if="trainBadge" :type="trainBadge.type" size="small" effect="dark" round>
+        <el-tooltip :content="health?.model_ref || '未加载模型'" placement="right" :disabled="!health?.model_ref">
+          <el-tag :type="modelBadge.type" size="small" effect="dark" round class="foot-tag">
+            {{ modelBadge.text }}
+          </el-tag>
+        </el-tooltip>
+        <el-tag v-if="trainBadge" :type="trainBadge.type" size="small" effect="dark" round class="foot-tag">
           {{ trainBadge.text }}
         </el-tag>
         <p v-if="healthError" class="foot-error">{{ healthError }}</p>
@@ -168,6 +201,22 @@ const navs = [
   display: flex;
   flex-direction: column;
   gap: 6px;
+  /* 防止长内容撑破侧栏产生横向滚动条 */
+  min-width: 0;
+  overflow: hidden;
+}
+
+/*
+ * 侧栏宽度固定 208px，标签内容必须能收缩。
+ * el-tag 默认 white-space: nowrap 且无最大宽度限制，
+ * 模型名一长就顶出滚动条。
+ */
+.foot-tag {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
 }
 
 .foot-error {
