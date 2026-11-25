@@ -15,7 +15,7 @@
  * 后端 state 也按同一 key 隔离，两侧一致。
  */
 
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
 
@@ -224,6 +224,19 @@ function initPplChart() {
   window.addEventListener('resize', () => pplChart?.resize())
 }
 
+/**
+ * 收起/展开趋势图。
+ *
+ * 必须手动 resize：v-show 隐藏时容器宽高为 0，echarts 内部会记下 0 尺寸，
+ * 重新展开后画布仍是 0x0（表现为图表"消失"）。等 DOM 显示完成再 resize 一次。
+ */
+function togglePpl() {
+  showPpl.value = !showPpl.value
+  if (showPpl.value) {
+    nextTick(() => pplChart?.resize())
+  }
+}
+
 function updatePplChart() {
   pplChart?.setOption({
     xAxis: { data: pplPoints.value.map((_, i) => i) },
@@ -281,56 +294,20 @@ const reuseRatio = computed(() => {
 
         <el-switch v-model="thinkingMode" active-text="思考模式" class="full" />
 
-        <el-button size="small" text class="full" @click="showParams = !showParams">
-          {{ showParams ? '收起参数' : '展开推理参数' }}
-        </el-button>
-
-        <div v-if="showParams" class="param-box">
-          <label class="param">
-            <span>temperature</span>
-            <el-input-number v-model="params.temperature" :min="0" :max="3" :step="0.05" :precision="2" size="small" controls-position="right" />
-          </label>
-          <label class="param">
-            <span>top_p</span>
-            <el-input-number v-model="params.top_p" :min="0.01" :max="1" :step="0.05" :precision="2" size="small" controls-position="right" />
-          </label>
-          <label class="param">
-            <span>top_k</span>
-            <el-input-number v-model="params.top_k" :min="0" :step="10" size="small" controls-position="right" />
-          </label>
-          <label class="param">
-            <span>max_tokens</span>
-            <el-input-number v-model="params.max_tokens" :min="1" :step="128" size="small" controls-position="right" />
-          </label>
-          <label class="param">
-            <span>presence</span>
-            <el-input-number v-model="params.alpha_presence" :min="0" :max="2" :step="0.05" :precision="2" size="small" controls-position="right" />
-          </label>
-          <label class="param">
-            <span>frequency</span>
-            <el-input-number v-model="params.alpha_frequency" :min="0" :max="2" :step="0.05" :precision="2" size="small" controls-position="right" />
-          </label>
-          <label class="param">
-            <span>decay</span>
-            <el-input-number v-model="params.alpha_decay" :min="0" :max="1" :step="0.001" :precision="3" size="small" controls-position="right" />
-          </label>
-          <label class="param">
-            <span>newline_adj</span>
-            <el-input-number v-model="params.newline_adj" :min="-10" :max="10" size="small" controls-position="right" />
-          </label>
-          <label class="param">
-            <span>max_rounds</span>
-            <el-input-number v-model="params.max_rounds" :min="0" size="small" controls-position="right" />
-            <small class="hint">0 = 不裁剪（保留增量 prefill 前缀）</small>
-          </label>
-          <el-checkbox v-model="params.presystem">注入示范前缀</el-checkbox>
-          <el-checkbox v-model="params.global_penalty">全局重复惩罚</el-checkbox>
-          <el-button size="small" class="full" type="primary" plain @click="saveParams">
-            应用到本会话
-          </el-button>
-        </div>
-
         <el-divider />
+
+        <div class="ppl-inline">
+          <div class="ppl-head">
+            <span>增量复用趋势</span>
+            <el-button size="small" text @click="togglePpl">
+              {{ showPpl ? '×' : '展开' }}
+            </el-button>
+          </div>
+          <!-- 用 v-show 而非 v-if：图表 DOM 必须常驻，
+               否则重新展开时 echarts 容器丢失、initPplChart 不会再跑 -->
+          <div v-show="showPpl" ref="pplEl" class="ppl-chart" />
+          <p v-show="showPpl" class="hint">纵轴为每轮复用的 token 数</p>
+        </div>
 
         <div v-if="stats" class="stats-mini">
           <div class="mini-row">
@@ -408,25 +385,72 @@ const reuseRatio = computed(() => {
       </div>
     </section>
 
-    <!-- 右：困惑度／复用趋势 -->
-    <aside v-if="showPpl" class="panel ppl-panel">
+    <!-- 右：推理参数 -->
+    <aside class="panel param-panel">
       <div class="panel-title">
-        <span>增量复用趋势</span>
-        <el-button size="small" text @click="showPpl = false">×</el-button>
+        <span>推理参数</span>
+        <el-button size="small" text @click="saveParams">应用</el-button>
       </div>
-      <div ref="pplEl" class="ppl-chart" />
-      <p class="hint ppl-hint">纵轴为每轮复用的 token 数</p>
+
+      <div class="param-body">
+        <label class="param">
+          <span>temperature</span>
+          <el-input-number v-model="params.temperature" :min="0" :max="3" :step="0.05" :precision="2" size="small" controls-position="right" />
+        </label>
+        <label class="param">
+          <span>top_p</span>
+          <el-input-number v-model="params.top_p" :min="0.01" :max="1" :step="0.05" :precision="2" size="small" controls-position="right" />
+        </label>
+        <label class="param">
+          <span>top_k</span>
+          <el-input-number v-model="params.top_k" :min="0" :step="10" size="small" controls-position="right" />
+        </label>
+        <label class="param">
+          <span>max_tokens</span>
+          <el-input-number v-model="params.max_tokens" :min="1" :step="128" size="small" controls-position="right" />
+        </label>
+        <label class="param">
+          <span>presence</span>
+          <el-input-number v-model="params.alpha_presence" :min="0" :max="2" :step="0.05" :precision="2" size="small" controls-position="right" />
+        </label>
+        <label class="param">
+          <span>frequency</span>
+          <el-input-number v-model="params.alpha_frequency" :min="0" :max="2" :step="0.05" :precision="2" size="small" controls-position="right" />
+        </label>
+        <label class="param">
+          <span>decay</span>
+          <el-input-number v-model="params.alpha_decay" :min="0" :max="1" :step="0.001" :precision="3" size="small" controls-position="right" />
+        </label>
+        <label class="param">
+          <span>newline_adj</span>
+          <el-input-number v-model="params.newline_adj" :min="-10" :max="10" size="small" controls-position="right" />
+        </label>
+        <label class="param">
+          <span>max_rounds</span>
+          <el-input-number v-model="params.max_rounds" :min="0" size="small" controls-position="right" />
+          <small class="hint">0 = 不裁剪（保留增量 prefill 前缀）</small>
+        </label>
+
+        <el-checkbox v-model="params.presystem">注入示范前缀</el-checkbox>
+        <el-checkbox v-model="params.global_penalty">全局重复惩罚</el-checkbox>
+      </div>
     </aside>
-    <el-button v-else class="ppl-toggle" size="small" @click="showPpl = true">趋势</el-button>
   </div>
 </template>
 
 <style scoped>
 .chat-layout {
   display: grid;
-  grid-template-columns: 260px 1fr auto;
+  /* 左：会话+趋势；中：对话；右：推理参数 */
+  grid-template-columns: 260px 1fr 280px;
   gap: 12px;
   height: 100%;
+}
+
+@media (max-width: 1280px) {
+  .chat-layout {
+    grid-template-columns: 232px 1fr 248px;
+  }
 }
 
 .side {
@@ -606,23 +630,44 @@ const reuseRatio = computed(() => {
   margin-right: auto;
 }
 
-.ppl-panel {
-  width: 200px;
+/* ── 左侧内嵌趋势图 ───────────────────────────────────────────────── */
+.ppl-inline {
   display: flex;
   flex-direction: column;
+  gap: 4px;
+}
+
+.ppl-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--foundry-text-dim);
 }
 
 .ppl-chart {
-  height: 160px;
-  padding: 6px;
+  height: 150px;
+  margin: 0 -6px;
 }
 
-.ppl-hint {
-  padding: 0 10px 8px;
-  margin: 0;
+/* ── 右侧推理参数面板 ─────────────────────────────────────────────── */
+.param-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
-.ppl-toggle {
+.param-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.param-toggle {
   align-self: start;
 }
 
