@@ -299,6 +299,7 @@ class InferenceEngine:
         should_stop: Callable[[], bool] | None = None,
         rollback: bool = False,
         raw_prompt: str | None = None,
+        stop_sequences: tuple[str, ...] | None = None,
     ) -> GenResult:
         """生成回复。
 
@@ -315,6 +316,9 @@ class InferenceEngine:
             完全跳过 ``history`` / ``user_message`` / 对话模板。
             续写不需要 ``User:``/``Assistant:`` 结构 —— 那样会污染文风，
             模型会开始模仿助手腔调而不是延续原文叙事。
+        :param stop_sequences: 自定义 stop 序列。为 None 时用默认的
+            ``STOP_SEQUENCES``（拦住 "\n\nUser:" 等模板泄漏）；
+            传空元组则完全关闭拦截。
         """
         pipeline = self._require_pipeline()
         params.validate()
@@ -362,6 +366,7 @@ class InferenceEngine:
                 params=params,
                 on_token=on_token,
                 should_stop=should_stop,
+                stop_sequences=stop_sequences,
             )
 
             # 提交新状态
@@ -389,6 +394,7 @@ class InferenceEngine:
         params: InferParams,
         on_token: Callable[[str], None] | None,
         should_stop: Callable[[], bool] | None,
+        stop_sequences: tuple[str, ...] | None = None,
     ) -> tuple[str, Any, Any]:
         """调用上游 pipeline.generate。
 
@@ -406,15 +412,33 @@ class InferenceEngine:
         StopIteration``，就会把**正常的提前停止**误判成故障。
         本层只捕获真正的错误。
         """
-        from foundry.infer.sampler import make_pipeline_args
+        from foundry.infer.sampler import STOP_SEQUENCES, StopSequenceFilter, make_pipeline_args
 
         args = make_pipeline_args(params)
+
+        # ★ stop 序列拦截。这段此前**缺失** —— StopSequenceFilter 定义了
+        # 却从未被调用，导致模型输出 "\n\nUser:" 后继续自问自答。
+        #
+        # 续写场景尤其致命：喂一段小说，模型写完一段后自己接上 "User:" 提问，
+        # 再自己回答，输出了好几轮无关对话。
+        seqs = stop_sequences if stop_sequences is not None else STOP_SEQUENCES
+        filt = StopSequenceFilter(sequences=tuple(seqs)) if seqs else None
 
         def callback(chunk: str) -> None:
             if should_stop is not None and should_stop():
                 raise _StopGeneration
-            if on_token is not None:
-                on_token(chunk)
+
+            if filt is None:
+                if on_token is not None:
+                    on_token(chunk)
+                return
+
+            # feed() 返回已确认安全的部分（末尾可能是 stop 前缀，需暂存）
+            safe = filt.feed(chunk)
+            if safe and on_token is not None:
+                on_token(safe)
+            if filt.stopped:
+                raise _StopGeneration
 
         try:
             raw, new_state, new_occ = pipeline.generate(
@@ -428,8 +452,22 @@ class InferenceEngine:
         except _StopGeneration:
             # 上游兼容 StopIteration 的实现会先返回，走不到这里；
             # 不兼容的实现会把它冒出来，此时用已有的 state 收尾。
+            if filt is not None:
+                tail = filt.flush()
+                if tail and on_token is not None:
+                    on_token(tail)
             return "", state, None
         except Exception as exc:  # noqa: BLE001
             raise InferError(f"生成失败: {exc}") from exc
+
+        # 正常结束：把 filter 里暂存的尾巴吐出去
+        if filt is not None:
+            tail = filt.flush()
+            if tail and on_token is not None:
+                on_token(tail)
+            # 用 filter 累计的安全文本作为权威结果，
+            # 避免 raw 里残留在 stop 序列之后的内容被当成输出
+            if filt.emitted:
+                raw = filt.emitted
 
         return raw or "", new_state, new_occ

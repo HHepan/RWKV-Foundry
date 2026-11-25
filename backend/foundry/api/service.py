@@ -35,7 +35,7 @@ from foundry.domain.dataset import (
 from foundry.domain.recipe import Recipe, RecipeError
 from foundry.errors import ConflictError, FoundryError, NotFoundError
 from foundry.infer.params import InferParams
-from foundry.infer.prompt import ChatMessage, build_completion_prompt
+from foundry.infer.prompt import ChatMessage, build_completion_prompt, get_completion_preset
 from foundry.paths import safe_join, safe_name
 from foundry.storage import ingest, repo
 from foundry.train.job import TrainError, TrainJob
@@ -752,6 +752,13 @@ def complete(
     role_content = _load_role_content(state, role_id)
     prompt = build_completion_prompt(text, preset=preset, system_content=role_content)
 
+    # 用预设自带的 stop 序列。这是从 RWKV-Runner 迁移的关键一环：
+    # 没有它，模型写完一段会输出 "\n\nUser:" 然后自问自答，
+    # 续写变成好几轮无关对话。
+    preset_cfg = get_completion_preset(preset)
+    stop_text = (preset_cfg.get("stop") or "").strip()
+    stop_seqs: tuple[str, ...] = (stop_text,) if stop_text else ()
+
     # 独立 session：与对话 state 隔离，避免前缀污染
     session_key = f"__completion__|{model_ref}|{session_name}"
 
@@ -768,6 +775,7 @@ def complete(
         on_token=on_token,
         should_stop=should_stop,
         raw_prompt=prompt,
+        stop_sequences=stop_seqs,
     )
 
     return result.as_dict()

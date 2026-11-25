@@ -60,15 +60,48 @@ const mode = ref('chat')
 const completionText = ref('')
 const completionPreset = ref('novel')
 
-const COMPLETION_PRESETS = [
-  { key: 'novel', label: '小说续写', hint: '贴入小说已有段落，模型接着往下写' },
-  { key: 'scene', label: '情景续写', hint: '贴入场景描写，模型补充环境、动作与氛围' },
-  { key: 'story', label: '故事续写', hint: '贴入故事段落，模型推进情节发展' },
-]
+/**
+ * 续写场景预设 —— 从后端 /api/chat/completion-presets 拉取。
+ *
+ * 不在前端写死：后端才是唯一真相。这些预设迁移自 RWKV-Runner 的
+ * defaultPresets，每个都带 prompt 示例、stop 序列、inject 模板，
+ * 前端只需要 label 和 hint 用于展示。
+ */
+const COMPLETION_PRESETS = ref([])
 
-const currentPresetHint = computed(
-  () => COMPLETION_PRESETS.find((p) => p.key === completionPreset.value)?.hint || '',
+const currentPreset = computed(
+  () => COMPLETION_PRESETS.value.find((p) => p.key === completionPreset.value),
 )
+const currentPresetHint = computed(() => currentPreset.value?.hint || '')
+
+async function loadCompletionPresets() {
+  try {
+    const res = await chatApi.completionPresets()
+    const list = res?.presets || {}
+    COMPLETION_PRESETS.value = Object.entries(list).map(([key, v]) => ({
+      key,
+      label: v.label || key,
+      hint: v.hint || '',
+      prompt: v.prompt || '',
+      stop: v.stop || '',
+    }))
+  } catch (err) {
+    ElMessage.warning(`加载续写预设失败: ${err.message}`)
+  }
+}
+
+/** 记录上次预设填入的内容，用于判断能否安全覆盖 */
+const lastPresetPrompt = ref('')
+
+/** 选中预设时把示例 prompt 填进输入框（若当前为空或用户确认覆盖） */
+function onPresetChange(key) {
+  const p = COMPLETION_PRESETS.value.find((x) => x.key === key)
+  if (!p || !p.prompt) return
+  if (!completionText.value.trim() || completionText.value === lastPresetPrompt.value) {
+    completionText.value = p.prompt
+    lastPresetPrompt.value = p.prompt
+  }
+}
 
 const userInput = ref('')
 const messagesEl = ref(null)
@@ -156,6 +189,7 @@ async function preloadModel() {
 
 onMounted(async () => {
   await loadModels()
+  await loadCompletionPresets()
   initPplChart()
 })
 
@@ -537,7 +571,7 @@ const reuseRatio = computed(() => {
         <!-- 续写模式 -->
         <template v-else>
           <div class="completion-bar">
-            <el-select v-model="completionPreset" size="small" class="preset-select">
+            <el-select v-model="completionPreset" size="small" class="preset-select" @change="onPresetChange">
               <el-option
                 v-for="p in COMPLETION_PRESETS"
                 :key="p.key"

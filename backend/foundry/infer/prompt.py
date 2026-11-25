@@ -161,26 +161,145 @@ def build_prompt(
 #: 这些不是 RWKV-Runner 的原样拷贝——Runner 用的是预设文件系统，
 #: 结构复杂。这里提炼出它的核心思路：给模型一个体裁锚点，
 #: 让续写方向可控，而不是让它自由发散。
-COMPLETION_PRESETS: dict[str, dict[str, str]] = {
+#: 续写场景预设 —— 迁移自 RWKV-Runner 的 defaultPresets。
+#:
+#: ## 目录结构说明
+#:
+#: 每个预设包含：
+#:   label       UI 显示名
+#:   description 用途说明
+#:   prompt      预填到输入框的示例原文（可编辑）
+#:   stop        stop 序列（模型遇到该文本即停止）
+#:   inject_start / inject_end
+#:               对话式续写的注入模板。RWKV-Runner 的核心机制：
+#:                 实际发给模型 = prompt + inject_start + <模型生成> + inject_end + ...
+#:               非对话式场景（如代码补全）这两项为空。
+#:
+#: 迁移原则：**保留原始 prompt 一字不改**，因为这些示例是上游调试过的，
+#: 改动会破坏模型表现。只把 TS 的多行拼接还原成完整字符串。
+COMPLETION_PRESETS: dict[str, dict] = {
     "novel": {
         "label": "小说续写",
         "description": "延续小说的叙事、人物与文风",
-        "prompt_prefix": "",
-        "hint": "把小说已有段落贴进来，模型会接着往下写。",
+        "prompt": (
+            "The following is an epic science fiction masterpiece that is immortalized, "
+            "with delicate descriptions and grand depictions of interstellar civilization wars.\n"
+            "Chapter 1.\n"
+        ),
+        "stop": "\n\nUser",
+        "inject_start": "",
+        "inject_end": "",
+        "hint": "贴入小说已有段落，模型会接着往下写。",
     },
-    "scene": {
-        "label": "情景续写",
-        "description": "围绕一个场景继续展开描写",
-        "prompt_prefix": "",
-        "hint": "贴入场景描写，模型会补充环境、动作与氛围。",
+    "translator": {
+        "label": "翻译",
+        "description": "用续写方式做英译中",
+        "prompt": (
+            "Translate this into Chinese.\n"
+            "\n"
+            "English: What rooms do you have available?"
+        ),
+        "stop": "\n\nUser",
+        "inject_start": "",
+        "inject_end": "",
+        "hint": "给出 English: 开头的原文，模型会输出中文译文。",
     },
-    "story": {
-        "label": "操作故事续写",
-        "description": "按已有情节推进故事发展",
-        "prompt_prefix": "",
-        "hint": "贴入故事开头或当前段落，模型会推进情节。",
+    "catgirl": {
+        "label": "猫娘对话",
+        "description": "角色扮演式对话（带语气标签）",
+        "prompt": (
+            "User: 你好，请介绍一下你自己。\n"
+            "Assistant: 主人好喵~ 我是巧克力，一只黑色混种猫娘。"
+            "虽然平时有点呆呆的，但最大的优点就是诚实！{星星眼}\n"
+            "User: 你认识香草吗\n"
+            "Assistant: 认识的喵! 香草是巧克力的双胞胎妹妹哟! {兴奋}\n"
+            "User: 那你们平时都做什么\n"
+            "Assistant:"
+        ),
+        "stop": "\n\nUser",
+        "inject_start": "\n\nAssistant: ",
+        "inject_end": "\n\nUser: ",
+        "hint": "对话式续写：模型以 Assistant 身份接话，用 {标签} 表达神态。",
+    },
+    "kongfu": {
+        "label": "情景续写（修真）",
+        "description": "文本冒险游戏，逐段推进情景",
+        "prompt": (
+            "User: 请你扮演一个文本冒险游戏，我是游戏主角。"
+            "这是一个玄幻修真世界，有四大门派。"
+            "我输入我的行动，请你显示行动结果，并具体描述环境。"
+            "我的第一个行动是“醒来”，请开始故事。"
+        ),
+        "stop": "\n\nUser",
+        "inject_start": "\n\nAssistant: ",
+        "inject_end": "\n\nUser: ",
+        "hint": "贴入你的行动描述，模型会展开场景与结果。",
+    },
+    "code": {
+        "label": "代码补全",
+        "description": "给定函数头，续写函数体",
+        "prompt": "def sum(",
+        "stop": "\n\n",
+        "inject_start": "",
+        "inject_end": "",
+        "hint": "非对话式：直接给代码前缀，模型接着写。",
+    },
+    "werewolf": {
+        "label": "故事续写（狼人杀）",
+        "description": "多角色剧情推进与投票流程",
+        "prompt": (
+            "There is currently a game of Werewolf with six players, including a Seer "
+            "(who can check identities at night), two Werewolves (who can choose someone "
+            "to kill at night), a Bodyguard (who can choose someone to protect at night), "
+            "two Villagers (with no special abilities), and a game host. User will play as "
+            "Player 1, Assistant will play as Players 2-6 and the game host, and they will "
+            "begin playing together.\n"
+            "\n"
+            "Assistant: Next, I will act as the game host and assign everyone their roles, "
+            "including randomly assigning yours.\n"
+            "\n"
+            "User: Okay, I understand. Let's begin. Please assign me a role.\n"
+            "\n"
+            "Assistant: You are the Seer. Now that night has fallen, please choose a player "
+            "to check his identity.\n"
+            "\n"
+            "User: Tonight, I want to check Player 2 and find out his role."
+        ),
+        "stop": "\n\nUser",
+        "inject_start": "\n\nAssistant: ",
+        "inject_end": "\n\nUser: ",
+        "hint": "多轮剧情：你扮演玩家 1，模型扮演主持人与其他玩家。",
+    },
+    "instruct_story": {
+        "label": "指令式故事",
+        "description": "给指令 + 输入，模型产出故事",
+        "prompt": (
+            "Instruction: Write a story using the following information\n"
+            "\n"
+            "Input: A man named Alex chops a tree down\n"
+            "\n"
+            "Response:"
+        ),
+        "stop": "",
+        "inject_start": "",
+        "inject_end": "",
+        "hint": "Instruction / Input / Response 三段式，适合结构化写作。",
+    },
+    "blank": {
+        "label": "空白",
+        "description": "不加任何预设，完全自由续写",
+        "prompt": "",
+        "stop": "",
+        "inject_start": "",
+        "inject_end": "",
+        "hint": "从零开始，模型续写你给的任何文本。",
     },
 }
+
+
+def get_completion_preset(preset: str) -> dict:
+    """取预设配置，未知 key 回退到 ``novel``。"""
+    return COMPLETION_PRESETS.get(preset) or COMPLETION_PRESETS["novel"]
 
 
 def build_completion_prompt(
@@ -193,7 +312,7 @@ def build_completion_prompt(
 
     与 ``build_prompt`` 的区别：
 
-      - **不加** ``User:`` / ``Assistant:`` 模板
+      - **不加** ``User:`` / ``Assistant:`` 对话模板
       - **不加** ``presystem`` 示范对话前缀（那是对话专用）
       - 原文原样作为 prompt，模型在其后直接续写
       - 可选的角色卡（system）以 ``System:`` 段置于最前
@@ -204,9 +323,20 @@ def build_completion_prompt(
     用 ``System:`` 段而不是散文式说明，是因为 RWKV 训练数据里
     ``System:`` 是明确的分隔标记，模型认得这个结构。
 
-    :param text: 用户提供的待续写原文
-    :param preset: 预设场景 key（当前不影响输出，保留用于未来扩展）
-    :param system_content: 可选的风格/角色设定
+    ## inject_start / inject_end 的作用（迁移自 RWKV-Runner）
+
+    Runner 的对话式续写靠这两个字段实现：
+
+        inject_start = "\n\nAssistant: "    ← 提示模型"该你说了"
+        inject_end   = "\n\nUser: "         ← 生成后接这个，用户可继续输入
+
+    **本函数不追加 inject_start。** 原因：Runner 是先拼好完整对话再喂给
+    pipeline；而我们用的是"原文即 prompt"的直通模式，若末尾再插
+    ``Assistant: ``，等于让模型续写一段自问自答的对话，与用户提供的
+    原文体裁冲突（比如贴小说段落时多出一个 ``Assistant: `` 会污染叙事）。
+
+    这两项由调用方（service.complete）在需要多轮时自行决定是否追加，
+    本函数保持"纯原文"的语义，便于测试与复用。
     """
     parts: list[str] = []
 
