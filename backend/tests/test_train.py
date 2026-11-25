@@ -537,3 +537,84 @@ def test_build_script_keeps_dots_in_model_name(recipe, paths, tmp_path):
     assert "rwkv7-g1e-2.9b-20260312-ctx8192.pth" in content
     # 确认没有把 .9b 之类的片段顶掉
     assert "rwkv7-g1e-2.pth" not in content
+
+
+# ── 后台监控：训练结束后状态必须自动落库 ────────────────────────────────
+def test_monitor_updates_status_on_natural_exit(paths, recipe, tmp_path):
+    """★ 训练自然结束时，monitor 必须回调，把终态交还给调用方落库。
+
+    ## 这里修复过一个只在真训练暴露的缺陷
+
+    start_training 原本调完 job.start() 就返回，**没有任何代码等待进程退出**。
+    后果：训练跑完后 DB 里 status 永远停在 running，finished_at/exit_code
+    永远是 null，前端轮询永远看到"训练中"。
+
+    所有单元测试都是显式 wait()/kill() 的，所以从未发现这个问题 ——
+    它只在「真实训练跑完」这个场景下才出现。
+    """
+    script = tmp_path / "ok.sh"
+    script.write_text(f'#!/bin/sh\nexec "{default_python_exe()}" -c "print(1)"\n', encoding="utf-8")
+    script.chmod(0o755)
+
+    j = TrainJob(run_id=1, folder="t", recipe=recipe, paths=paths, run_dir=tmp_path)
+    captured: list[TrainJob] = []
+    j.start(script)
+
+    t = j.monitor(on_finished=captured.append)
+    t.join(timeout=15)
+
+    assert len(captured) == 1, "monitor 未触发回调"
+    assert captured[0].status is JobStatus.COMPLETED
+    assert captured[0].exit_code == 0
+    assert captured[0].finished_at is not None
+
+
+def test_monitor_records_error_status(paths, recipe, tmp_path):
+    """非零退出时 monitor 应给出 ERROR 与退出码。"""
+    script = tmp_path / "bad.sh"
+    script.write_text(
+        f'#!/bin/sh\nexec "{default_python_exe()}" -c "raise SystemExit(5)"\n', encoding="utf-8"
+    )
+    script.chmod(0o755)
+
+    j = TrainJob(run_id=1, folder="t", recipe=recipe, paths=paths, run_dir=tmp_path)
+    captured: list[TrainJob] = []
+    j.start(script)
+    j.monitor(on_finished=captured.append).join(timeout=15)
+
+    assert len(captured) == 1
+    assert captured[0].status is JobStatus.ERROR
+    assert captured[0].exit_code == 5
+
+
+def test_monitor_survives_callback_exception(paths, recipe, tmp_path):
+    """回调抛异常不得让监控线程崩掉或卡住。"""
+    script = tmp_path / "ok2.sh"
+    script.write_text(f'#!/bin/sh\nexec "{default_python_exe()}" -c "pass"\n', encoding="utf-8")
+    script.chmod(0o755)
+
+    j = TrainJob(run_id=1, folder="t", recipe=recipe, paths=paths, run_dir=tmp_path)
+    j.start(script)
+
+    def boom(_job):
+        raise RuntimeError("callback failed")
+
+    t = j.monitor(on_finished=boom)
+    t.join(timeout=15)
+    assert not t.is_alive(), "监控线程未正常退出"
+
+
+def test_monitor_marks_stopped_after_kill(paths, recipe, tmp_path):
+    """被 kill 的任务，monitor 回调时状态应为 STOPPED。"""
+    script = _write_fake_train(tmp_path, seconds=30)
+    j = TrainJob(run_id=1, folder="t", recipe=recipe, paths=paths, run_dir=tmp_path)
+    captured: list[TrainJob] = []
+    j.start(script)
+    t = j.monitor(on_finished=captured.append)
+
+    time.sleep(0.5)
+    j.kill(grace=3.0)
+    t.join(timeout=15)
+
+    assert len(captured) == 1
+    assert captured[0].status is JobStatus.STOPPED

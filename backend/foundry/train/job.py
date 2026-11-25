@@ -195,6 +195,44 @@ class TrainJob:
                     self.error = f"训练进程退出码 {self.exit_code}"
         return self.exit_code if self.exit_code is not None else -1
 
+    def monitor(self, on_finished: Callable[[TrainJob], None] | None = None) -> threading.Thread:
+        """在后台线程等待进程结束，结束时回调 ``on_finished(self)``。
+
+        ## 为什么必须有这个方法
+
+        此前 ``start_training`` 调完 ``job.start()`` 就直接返回，
+        **没有任何代码等待进程退出**。后果：
+
+          - 训练自然完成时，数据库里 status 永远是 running
+          - finished_at / exit_code 永远是 null
+          - 前端轮询永远看到"训练中"，直到用户手动刷新
+
+        这个缺陷只在真实训练跑完时才暴露 —— 单元测试里所有 job 都是
+        显式调 wait() 或 kill() 的，所以一直没被发现。
+
+        :param on_finished: 进程结束后的回调（通常用来把最终状态写回数据库）
+        :returns: 监控线程（daemon，不阻塞解释器退出）
+        """
+
+        def _watch() -> None:
+            try:
+                self.wait()
+            except Exception:  # noqa: BLE001 - 监控线程不能因异常静默死掉
+                with self._lock:
+                    self.status = JobStatus.ERROR
+                    if self.error is None:
+                        self.error = "监控线程异常终止"
+            finally:
+                if on_finished is not None:
+                    with contextlib.suppress(Exception):
+                        on_finished(self)
+
+        thread = threading.Thread(
+            target=_watch, daemon=True, name=f"foundry-monitor-{self.folder}"
+        )
+        thread.start()
+        return thread
+
     # ── 停止 ────────────────────────────────────────────────────────────
     def request_stop(self) -> bool:
         """请求停止。幂等，可在任意线程调用。"""

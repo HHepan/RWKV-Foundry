@@ -379,6 +379,28 @@ def start_training(state: AppState, raw: dict, save_folder: str) -> dict:
         state.register_job(job)
         repo.update_run_status(state.db, run_id, "running", pid=job.pid)
 
+        # 5. 后台监控：进程退出时把最终状态写回数据库
+        #
+        # 没有这一步，训练自然完成后 DB 里 status 会永远停在 running，
+        # finished_at / exit_code 永远为 null —— 前端轮询看不到结束。
+        # 这个缺陷只在真实训练跑完时暴露，fake 测试发现不了。
+        def _on_finished(finished_job: TrainJob) -> None:
+            try:
+                # 先把最后几步 loss/日志灌进来，再写终态
+                with contextlib.suppress(Exception):
+                    ingest.ingest_run(state.db, finished_job.run_id, finished_job.run_dir)
+                repo.update_run_status(
+                    state.db,
+                    finished_job.run_id,
+                    finished_job.status.value,
+                    exit_code=finished_job.exit_code,
+                    error=finished_job.error,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        job.monitor(on_finished=_on_finished)
+
     except (BinidxError, TrainError, OSError) as exc:
         repo.update_run_status(state.db, run_id, "error", error=str(exc))
         raise ServiceError(f"启动训练失败: {exc}") from exc
