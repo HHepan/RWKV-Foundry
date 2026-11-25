@@ -163,6 +163,18 @@ class PIPELINE():
         if occurrence is None:
             occurrence = {}
 
+        # ── 防御：ctx 为空时补一个 BOS/EOD token ─────────────────────────
+        #
+        # 本函数原本假设 ctx 至少包含一个 token。若为空，
+        # i==0 分支的 `while len(tokens) > 0` 不会执行，
+        # `out` 从未被赋值，后面 `out[n] -= ...` 直接 UnboundLocalError。
+        #
+        # 上游调用方（foundry/infer/prefill.py）已修掉了会传空 ctx 的场景，
+        # 但这里再兜一层：vendored 代码不该假设调用方永远正确。
+        ctx_tokens_pre = ctx if isinstance(ctx, (list, tuple)) else self.encode(ctx)
+        if len(ctx_tokens_pre) == 0:
+            ctx = [0]  # token 0 = EOD，RWKV 词表的合法起始符
+
         # 懒构建 token 集合（依赖具体 tokenizer，只需算一次）
         if not hasattr(self, '_avoid_repeat_tokens'):
             self._avoid_repeat_tokens, self._avoid_penalty_tokens = _build_token_sets(self.tokenizer)

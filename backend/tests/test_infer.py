@@ -291,11 +291,19 @@ def test_plan_prefill_zero_lcp_triggers_rebuild():
 
 
 def test_plan_prefill_identical_prompt_feeds_nothing():
+    """完全相同的 prompt —— 原设计认为"不用喂"，但那会崩。
+
+    见 test_no_empty_feed_tokens_when_prompt_is_prefix 的说明：
+    feed_tokens 为空会让上游 generate 的 while 循环不执行，
+    `out` 变量未赋值 → UnboundLocalError。
+
+    现在的契约是：**永远不返回空 feed_tokens**，
+    宁可全量重喂也不能留空。
+    """
     text = "User: hi\n\nAssistant: "
     plan = plan_prefill(prompt=text, fed_text=text, has_state=True, encode=char_encode)
-    assert plan.feed_tokens == []
-    assert plan.reused_tokens == len(text)
-    assert plan.full_rebuild is False
+    assert plan.feed_tokens, "不能返回空 feed_tokens"
+    assert plan.full_rebuild is True
 
 
 def test_rebuild_fed_text_is_prompt_plus_output():
@@ -577,3 +585,53 @@ def test_stop_filter_handles_assistant_leak():
     out = f.feed("回答\nAssistant: 我替我说话")
     assert "Assistant:" not in out
     assert f.stopped is True
+
+
+# ── 空 feed_tokens 边界（真机上崩过一次）────────────────────────────────
+def test_no_empty_feed_tokens_when_prompt_is_prefix():
+    """★ 新 prompt 是旧 fed_text 的前缀时，绝不能返回空 feed_tokens。
+
+    ## 这里崩过一次
+
+    用户删掉模型生成的内容后重新点续写，新 prompt 变成了旧 fed_text
+    的前缀（LCP == 整个新 prompt）。原实现判定"全部复用、不用喂"，
+    返回 feed_tokens = []。
+
+    而上游 generate() 的实现是：
+
+        while len(tokens) > 0:
+            out, state = self.model.forward(...)
+        for n in args.token_ban:
+            out[n] = -float('inf')      ← out 从未赋值
+
+    于是抛出：cannot access local variable 'out' where it is not
+    associated with a value。用户看到的就是"生成失败"。
+
+    修复策略：这种情况回退成 full_rebuild，强制全量重喂。
+    多算一次换取不崩，非常值得。
+    """
+    fed = "请你扮演修真冒险游戏。\n\nAssistant: 你睁开眼。"
+    prompt = "请你扮演修真冒险游戏。\n\nAssistant: "
+
+    plan = plan_prefill(prompt=prompt, fed_text=fed, has_state=True, encode=char_encode)
+    assert plan.feed_tokens, "feed_tokens 不能为空，否则上游会 UnboundLocalError"
+    assert plan.full_rebuild is True
+    assert plan.reused_tokens == 0
+
+
+def test_identical_prompt_also_not_empty():
+    """完全相同的 prompt 也不能返回空 feed_tokens。"""
+    text = "User: hi\n\nAssistant: "
+    plan = plan_prefill(prompt=text, fed_text=text, has_state=True, encode=char_encode)
+    assert plan.feed_tokens, "完全一致时也必须重喂，不能留空"
+    assert plan.full_rebuild is True
+
+
+def test_normal_incremental_still_reuses():
+    """修复不能误伤正常复用：真增量场景仍应只喂差量。"""
+    fed = "User: hi\n\nAssistant: 你好\n\n"
+    prompt = fed + "User: 再见\n\nAssistant: "
+    plan = plan_prefill(prompt=prompt, fed_text=fed, has_state=True, encode=char_encode)
+    assert plan.full_rebuild is False
+    assert plan.reused_tokens == len(fed)
+    assert 0 < len(plan.feed_tokens) < len(prompt)

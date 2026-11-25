@@ -144,14 +144,30 @@ def plan_prefill(
             full_rebuild=True,
         )
 
-    # 完全一致：没有新内容要喂（重复提交同一 prompt 的边界情况）
-    if common == total:
+    # 完全一致 或 新 prompt 是旧 fed_text 的前缀：无需喂任何 token
+    #
+    # ⚠️ 这里有个致命边界：feed_tokens 为空会让上游崩。
+    #
+    # 上游 generate() 的实现是：
+    #     while len(tokens) > 0:
+    #         out, state = self.model.forward(...)
+    #     for n in args.token_ban:
+    #         out[n] = -float('inf')      ← out 从未赋值 -> UnboundLocalError
+    #
+    # 实测触发场景：用户删掉模型生成的内容后重新续写。
+    # 新 prompt 变成旧 fed_text 的前缀（LCP == 整个新 prompt），
+    # 于是判定"全部复用、不用喂"，feed_tokens = [] → 崩溃。
+    #
+    # 修复：这种情况下回退成 full_rebuild，强制全量重喂。
+    # 代价是多算一次（本来就没多少 token 可省），换来的是不崩。
+    # 复用率的微小损失远小于"用户一点续写就报错"。
+    if common >= total:
         return PrefillPlan(
-            feed_tokens=[],
-            reused_tokens=common,
+            feed_tokens=full_tokens,
+            reused_tokens=0,
             total_tokens=total,
-            reused_chars=len(prompt),
-            full_rebuild=False,
+            reused_chars=0,
+            full_rebuild=True,
         )
 
     reused_chars = token_prefix_chars(prompt, common, encode)
