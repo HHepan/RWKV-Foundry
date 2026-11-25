@@ -722,6 +722,7 @@ def complete(
     thinking_mode: bool = False,
     session_name: str = "",
     role_id: str | None = None,
+    history: list[dict] | None = None,
     on_token=None,
     should_stop=None,
 ) -> dict:
@@ -750,7 +751,9 @@ def complete(
         raise ServiceError("续写内容不能为空")
 
     role_content = _load_role_content(state, role_id)
-    prompt = build_completion_prompt(text, preset=preset, system_content=role_content)
+    prompt = build_completion_prompt(
+        text, preset=preset, system_content=role_content, history=history
+    )
 
     # 用预设自带的 stop 序列。这是从 RWKV-Runner 迁移的关键一环：
     # 没有它，模型写完一段会输出 "\n\nUser:" 然后自问自答，
@@ -762,9 +765,20 @@ def complete(
     # 独立 session：与对话 state 隔离，避免前缀污染
     session_key = f"__completion__|{model_ref}|{session_name}"
 
-    # 每次续写都从干净状态开始 —— 续写的上下文就是本次原文，
-    # 累积历史只会让模型看到越来越长的无关前缀。
-    state.engine.reset_session(session_key)
+    # ★ 只在首轮重置。
+    #
+    # 这里修过一个真实缺陷：原本**每轮都 reset**，导致多轮剧情完全断裂 ——
+    # 用户第二轮输入"我对那本《太清剑诀》产生兴趣"，模型只看到这一句孤立的
+    # 话（第一轮的"你扮演文本冒险游戏"设定已被清掉），于是退化成聊天助手，
+    # 回"您好！很高兴您对《太清剑诀》产生了兴趣！"。
+    #
+    # 现在的判据是 history：有历史说明处于多轮对话中，不能清；
+    # 空历史说明是新开一局，才需要重置 state。
+    #
+    # 注意 prompt 本身是按 history 重建的（不依赖 state 累积），
+    # 所以即使 state 被复用，上下文也始终与前端传来的历史一致。
+    if not history:
+        state.engine.reset_session(session_key)
 
     result = state.engine.generate(
         session_key=session_key,

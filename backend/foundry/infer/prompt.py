@@ -302,54 +302,107 @@ def get_completion_preset(preset: str) -> dict:
     return COMPLETION_PRESETS.get(preset) or COMPLETION_PRESETS["novel"]
 
 
+def _has_role_prefix(text: str) -> bool:
+    """文本是否已经以 ``User:`` / ``Assistant:`` 开头。"""
+    t = text.lstrip()
+    return t.startswith("User:") or t.startswith("Assistant:")
+
+
 def build_completion_prompt(
     text: str,
     *,
     preset: str = "novel",
     system_content: str | None = None,
+    history: list[dict] | None = None,
 ) -> str:
     """构建续写 prompt。
 
-    与 ``build_prompt`` 的区别：
+    ## 两种模式，由预设的 inject_start 决定
 
-      - **不加** ``User:`` / ``Assistant:`` 对话模板
-      - **不加** ``presystem`` 示范对话前缀（那是对话专用）
-      - 原文原样作为 prompt，模型在其后直接续写
-      - 可选的角色卡（system）以 ``System:`` 段置于最前
+    ### 纯续写（inject_start 为空）
 
-    ## 为什么角色卡仍用 System 段
+    预设：novel / translator / code / instruct_story / blank
 
-    续写时若设定「你是古龙风格的武侠小说家」，需要让模型知道这个约束。
-    用 ``System:`` 段而不是散文式说明，是因为 RWKV 训练数据里
-    ``System:`` 是明确的分隔标记，模型认得这个结构。
+        <system>
+        <原文>
+        <换行>            ← 模型接着写
 
-    ## inject_start / inject_end 的作用（迁移自 RWKV-Runner）
+    不加任何角色标记 —— 贴小说段落时多一个 ``Assistant:`` 会污染叙事。
 
-    Runner 的对话式续写靠这两个字段实现：
+    ### 对话式续写（inject_start 非空）
 
-        inject_start = "\n\nAssistant: "    ← 提示模型"该你说了"
-        inject_end   = "\n\nUser: "         ← 生成后接这个，用户可继续输入
+    预设：catgirl / kongfu / werewolf
 
-    **本函数不追加 inject_start。** 原因：Runner 是先拼好完整对话再喂给
-    pipeline；而我们用的是"原文即 prompt"的直通模式，若末尾再插
-    ``Assistant: ``，等于让模型续写一段自问自答的对话，与用户提供的
-    原文体裁冲突（比如贴小说段落时多出一个 ``Assistant: `` 会污染叙事）。
+        <system>
+        User: <预设 prompt 或用户输入>
 
-    这两项由调用方（service.complete）在需要多轮时自行决定是否追加，
-    本函数保持"纯原文"的语义，便于测试与复用。
+        Assistant: <第一轮生成>
+
+        User: <第二轮输入>
+
+        Assistant:          ← inject_start 提供这个提示
+
+    **为什么必须追加 inject_start**：没有它，模型不知道"该以 Assistant 身份
+    说话"，会退化成聊天助手腔（实测：输入修真冒险指令，模型回
+    "您好！很高兴您对《太清剑诀》产生了兴趣！"）。
+
+    ## history 的作用
+
+    多轮剧情必须累积历史，否则模型只看到孤立的一句输入，
+    无法延续前文设定。``history`` 形如::
+
+        [{"role": "user", "content": "请你扮演文本冒险游戏…"},
+         {"role": "assistant", "content": "你睁开眼睛…"}]
+
+    首轮 history 为空时，``text`` 就是开场设定。
     """
+    cfg = get_completion_preset(preset)
+    inject_start = cfg.get("inject_start") or ""
+
     parts: list[str] = []
 
     if system_content:
         parts.append(f"System: {system_content}\n\n")
 
-    # 原文原样保留：续写的全部上下文就在这段文本里
+    if history:
+        # ── 多轮：逐条还原为 User/Assistant 对话 ────────────────────────
+        for msg in history:
+            role = "Assistant" if msg.get("role") == "assistant" else "User"
+            content = (msg.get("content") or "").strip()
+            if not content:
+                continue
+            # 若内容本身已带角色前缀，不重复添加
+            if _has_role_prefix(content):
+                parts.append(f"{content}\n\n")
+            else:
+                parts.append(f"{role}: {content}\n\n")
+
+        # 本轮输入
+        cur = text.strip()
+        if _has_role_prefix(cur):
+            parts.append(f"{cur}\n\n")
+        else:
+            parts.append(f"User: {cur}\n\n")
+
+        if inject_start:
+            # inject_start 自带前导 "\n\n"，而循环里每条已补 "\n\n"，
+            # 直接拼会产生多余空行（\n\n\n）。去掉前导换行再补一个分隔。
+            parts.append(inject_start.lstrip("\n"))
+        return "".join(parts)
+
+    # ── 单轮 ────────────────────────────────────────────────────────────
     parts.append(text)
 
-    # 结尾补一个换行，避免模型把最后一行与续写内容粘在一起。
-    # 若原文本身以换行结尾则不重复添加。
-    if not parts[-1].endswith("\n"):
-        parts.append("\n")
+    if inject_start:
+        # 对话式：补角色提示，让模型以 Assistant 身份接话
+        if not parts[-1].endswith("\n"):
+            parts.append("\n")
+        # inject_start 形如 "\n\nAssistant: "，避免与前置换行叠加
+        parts.append(inject_start.lstrip("\n"))
+    else:
+        # 纯续写：只补一个换行，不与最后一行粘连
+        if not parts[-1].endswith("\n"):
+            parts.append("\n")
 
     return "".join(parts)
 

@@ -86,7 +86,7 @@ export const chatApi = {
    * @param {string} p.text      待续写的原文
    * @param {'novel'|'scene'|'story'} [p.preset]
    */
-  complete: ({ modelRef, text, preset, params, thinkingMode, sessionName, roleId }, handlers) =>
+  complete: ({ modelRef, text, preset, params, thinkingMode, sessionName, roleId, history }, handlers) =>
     streamSSE(
       '/api/chat/complete',
       {
@@ -97,6 +97,7 @@ export const chatApi = {
         thinking_mode: thinkingMode,
         session_name: sessionName,
         role_id: roleId,
+        history: history || [],
       },
       handlers,
     ),

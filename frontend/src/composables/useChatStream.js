@@ -219,6 +219,21 @@ export function useChatStream({ getModelRef, getParams, getRoleId, getSessionNam
     const src = (text || '').trim()
     if (!src || !getModelRef() || isStreaming.value) return false
 
+    // ★ 收集之前的续写轮次作为历史。
+    //
+    // 这里修过一个真实缺陷：原本每轮只发当前这一句，后端又重置 state，
+    // 导致多轮剧情完全断裂。用户第二轮说"我对那本《太清剑诀》产生兴趣"，
+    // 模型看不到第一轮的"你扮演文本冒险游戏"设定，退化成聊天助手腔。
+    //
+    // 历史只取 kind === 'completion' 的消息，且**只取同一 preset** ——
+    // 切换场景等于新开一局，不该把上一个场景的剧情带过来。
+    const history = []
+    for (const m of messages.value) {
+      if (m.kind !== 'completion' || m.preset !== preset) continue
+      if (m.source) history.push({ role: 'user', content: m.source })
+      if (m.content) history.push({ role: 'assistant', content: m.content })
+    }
+
     // 续写产物单独一条消息，原文挂在 source 上（界面可折叠显示）
     messages.value.push({
       role: 'assistant',
@@ -249,6 +264,7 @@ export function useChatStream({ getModelRef, getParams, getRoleId, getSessionNam
           thinkingMode: !!getParams()?.thinking_mode,
           sessionName: getSessionName?.() || '',
           roleId: getRoleId?.() || null,
+          history,
         },
         {
           onContent: applyChunk,

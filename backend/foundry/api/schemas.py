@@ -223,6 +223,9 @@ class CompletionRequest(BaseModel):
     thinking_mode: bool = False
     session_name: str = ""
     role_id: str | None = None
+    #: 多轮续写的历史。**不含本轮输入**（本轮由 text 提供）。
+    #: 为空表示新开一局，后端会重置 state。
+    history: list[MessagePayload] = Field(default_factory=list)
 
 
 class ChatResultResponse(BaseModel):
