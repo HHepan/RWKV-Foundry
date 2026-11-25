@@ -792,7 +792,23 @@ def complete(
         stop_sequences=stop_seqs,
     )
 
-    return result.as_dict()
+    out = result.as_dict()
+
+    # ★ 去掉 inject_start 造成的角色前缀泄漏。
+    #
+    # 对话式预设的 inject_start 是 "\n\nAssistant: "，用于提示模型"该你说了"。
+    # 但模型有时会把这个提示原样回吐，输出以 "Assistant: " 开头的内容 ——
+    # 实测：「Assistant: 画像上是一个身着古装的女子…」。
+    # 用户看到的应当是纯正文，不该带角色标记。
+    content = out.get("content") or ""
+    for prefix in ("Assistant:", "assistant:"):
+        stripped = content.lstrip()
+        if stripped.startswith(prefix):
+            content = stripped[len(prefix):].lstrip()
+            break
+    out["content"] = content
+
+    return out
 
 
 def reset_state(state: AppState, model_ref: str, session_name: str = "") -> None:
