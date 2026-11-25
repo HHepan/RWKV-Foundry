@@ -26,6 +26,7 @@ fake 场景不同。**旧项目的 bug 正是"界面显示已停止、GPU 仍在
 
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 import subprocess
@@ -58,11 +59,11 @@ def group_alive(pgid: int) -> bool:
     """进程组是否仍有成员。信号 0 只探测不发送。"""
     try:
         os.killpg(pgid, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
+    return True
 
 
 def group_members(pgid: int) -> list[str]:
@@ -150,8 +151,9 @@ def main() -> int:
             started = True
             print(f"[GPU ] 训练中    = {mem_now} MiB")
             break
-        if job._process is not None and job._process.poll() is not None:
-            print(f"[FAIL] 训练进程提前退出 rc={job._process.returncode}")
+        proc = job._process
+        if proc is not None and proc.poll() is not None:
+            print(f"[FAIL] 训练进程提前退出 rc={proc.returncode}")
             return 1
 
     if not started:
@@ -185,24 +187,20 @@ def main() -> int:
         print(f"[FAIL] 进程组 {pgid} 仍有残留: {members_after}")
         ok = False
         # 清理，避免污染机器
-        try:
+        with contextlib.suppress(ProcessLookupError):
             os.killpg(pgid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
     else:
         print(f"[PASS] 进程组 {pgid} 已完全消失")
 
     print(f"[GPU ] 终止后    = {mem_after} MiB")
     if mem_before and mem_after:
-        released = all(a <= b + 200 for a, b in zip(mem_after, mem_before))
-        # 若启动前本就占着显存，只要不比之前多太多就算释放了
-        leaked = [a - b for a, b in zip(mem_after, mem_before)]
+        # 若启动前本就占着显存，只要终止后不比之前多太多就算释放了
+        leaked = [a - b for a, b in zip(mem_after, mem_before, strict=False)]
         if any(x > 500 for x in leaked):
             print(f"[FAIL] 显存未完全释放，增量为 {leaked} MiB")
             ok = False
         else:
             print(f"[PASS] 显存已释放（增量 {leaked} MiB）")
-        _ = released
 
     print(f"\n{'全部通过' if ok else '存在问题'}")
     return 0 if ok else 1
