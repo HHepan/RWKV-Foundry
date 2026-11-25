@@ -219,21 +219,16 @@ export function useChatStream({ getModelRef, getParams, getRoleId, getSessionNam
     const src = (text || '').trim()
     if (!src || !getModelRef() || isStreaming.value) return false
 
-    // ★ 收集之前的续写轮次作为历史。
+    // 说明：不再收集 history。
     //
-    // 这里修过一个真实缺陷：原本每轮只发当前这一句，后端又重置 state，
-    // 导致多轮剧情完全断裂。用户第二轮说"我对那本《太清剑诀》产生兴趣"，
-    // 模型看不到第一轮的"你扮演文本冒险游戏"设定，退化成聊天助手腔。
+    // 续写模式下 text 就是前端文本域的完整内容（含之前所有轮次），
+    // 上下文由后端 state 增量复用维持。这与 RWKV-Runner 一致 ——
+    // Runner 每轮发送的都是完整 prompt，不区分"新增"和"历史"。
     //
-    // 历史只取 kind === 'completion' 的消息，且**只取同一 preset** ——
-    // 切换场景等于新开一局，不该把上一个场景的剧情带过来。
-    const history = []
-    for (const m of messages.value) {
-      if (m.kind !== 'completion' || m.preset !== preset) continue
-      if (m.source) history.push({ role: 'user', content: m.source })
-      if (m.content) history.push({ role: 'assistant', content: m.content })
-    }
-
+    // 之前的实现从 messages 里拼 history，但改造为回调模式后
+    // messages 里不再有 completion 消息，导致 history 恒为空、
+    // 后端每轮重置 state、复用率永远是 0%。
+    //
     // ★ 续写不再往 messages 里塞消息。
     //
     // 对齐 RWKV-Runner 的交互：整段文本域就是"对话本身"，
@@ -257,7 +252,6 @@ export function useChatStream({ getModelRef, getParams, getRoleId, getSessionNam
           thinkingMode: !!getParams()?.thinking_mode,
           sessionName: getSessionName?.() || '',
           roleId: getRoleId?.() || null,
-          history,
         },
         {
           // 每个增量直接交给外层追加到文本域，由它负责渲染

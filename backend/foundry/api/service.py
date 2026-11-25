@@ -722,7 +722,6 @@ def complete(
     thinking_mode: bool = False,
     session_name: str = "",
     role_id: str | None = None,
-    history: list[dict] | None = None,
     on_token=None,
     should_stop=None,
 ) -> dict:
@@ -738,11 +737,26 @@ def complete(
     这种助手腔，而不是延续小说的叙事。RWKV 是 base model，
     它天生就是文档续写器，不需要包装成问答。
 
-    ## 续写不复用会话 state
+    ## 续写靠「文本累积 + 增量 prefill」维持上下文
 
-    对话的 state 累积的是问答历史，续写需要的是干净的原文上下文。
-    两者混用会导致模型看到"上一段对话 + 这段小说"的混乱前缀。
-    因此续写用独立的 session_key，且每次从空 state 开始。
+    **不传 history**。前端把整块文本域的内容原样发过来（text 就是全文）。
+    这与 RWKV-Runner 一致：Runner 每次都把完整 prompt 发给后端。
+
+    那上下文怎么保持？靠 **state 增量复用**：
+
+      第 1 轮  prompt = "A"            全部喂入，state 累积了 A
+      第 2 轮  prompt = "A" + 续写 + "User: B"
+               LCP("A", 新prompt) = len(A)  → 只喂新增部分
+               state 继续累积 → 达到全量等价效果，但省掉重复计算
+
+    这就是 ``tokens_reused`` 的来源。若每轮 reset state，
+    不仅复用率为 0，长文本时每轮都要重新 prefill 全部历史，越来越慢。
+
+    ## 什么时候才需要重置
+
+    只有「换了一个完全不相关的新文档」才重置 —— 表现为新 prompt
+    与旧 fed_text 的公共前缀极短（LCP 接近 0）。这种情况由
+    plan_prefill 的 full_rebuild 判定自动处理，本函数不必操心。
     """
     ensure_model_loaded(state, model_ref)
     infer_params = InferParams.from_dict(params).validate()
@@ -751,9 +765,9 @@ def complete(
         raise ServiceError("续写内容不能为空")
 
     role_content = _load_role_content(state, role_id)
-    prompt = build_completion_prompt(
-        text, preset=preset, system_content=role_content, history=history
-    )
+    # 注意：不传 history。text 本身就是完整文本（前端文本域全部内容），
+    # 上下文靠 state 增量复用维持，不靠历史拼装。
+    prompt = build_completion_prompt(text, preset=preset, system_content=role_content)
 
     # 用预设自带的 stop 序列。这是从 RWKV-Runner 迁移的关键一环：
     # 没有它，模型写完一段会输出 "\n\nUser:" 然后自问自答，
@@ -765,20 +779,23 @@ def complete(
     # 独立 session：与对话 state 隔离，避免前缀污染
     session_key = f"__completion__|{model_ref}|{session_name}"
 
-    # ★ 只在首轮重置。
+    # ★ 不再无条件重置 state。
     #
-    # 这里修过一个真实缺陷：原本**每轮都 reset**，导致多轮剧情完全断裂 ——
-    # 用户第二轮输入"我对那本《太清剑诀》产生兴趣"，模型只看到这一句孤立的
-    # 话（第一轮的"你扮演文本冒险游戏"设定已被清掉），于是退化成聊天助手，
-    # 回"您好！很高兴您对《太清剑诀》产生了兴趣！"。
+    # 这里修过两个真实缺陷，都源于每轮 reset：
     #
-    # 现在的判据是 history：有历史说明处于多轮对话中，不能清；
-    # 空历史说明是新开一局，才需要重置 state。
+    #   1. 多轮剧情断裂 —— 第二轮输入"我对太清剑诀产生兴趣"时，
+    #      第一轮的"你扮演修真冒险游戏"设定已被清空，模型退化成
+    #      聊天助手腔："您好！很高兴您对《太清剑诀》产生了兴趣！"
     #
-    # 注意 prompt 本身是按 history 重建的（不依赖 state 累积），
-    # 所以即使 state 被复用，上下文也始终与前端传来的历史一致。
-    if not history:
-        state.engine.reset_session(session_key)
+    #   2. 复用率恒为 0 —— state 清空则 fed_text 为空，
+    #      plan_prefill 无法做前缀比对，每轮都全量重算。
+    #      长文本下越写越慢，这正是老大观察到"复用率一直 0%"的原因。
+    #
+    # 现在完全依赖 plan_prefill 的 full_rebuild 判定：
+    # 新 prompt 与 fed_text 的 LCP 极短时（换了个全新文档），
+    # 它会自动判定全量重建；否则复用前缀，只喂增量。
+    #
+    # 无需在这里做任何判断 —— 这是引擎层的职责。
 
     result = state.engine.generate(
         session_key=session_key,

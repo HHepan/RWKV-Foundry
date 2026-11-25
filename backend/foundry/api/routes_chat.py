@@ -165,7 +165,6 @@ async def _run_completion_stream(
                 thinking_mode=request.thinking_mode,
                 session_name=request.session_name,
                 role_id=request.role_id,
-                history=[m.model_dump() for m in request.history],
                 on_token=on_token,
                 should_stop=cancel.is_set,
             )

@@ -282,24 +282,39 @@ async function onComplete() {
   // 记录本次提交时的文本长度。流式追加从这里开始，
   // 避免把用户已写的前文当作模型输出重复渲染。
   const baseLen = completionText.value.length
-  let appended = ''
+
+  // ★ 模型输出前先补一个换行。
+  //
+  // 用户写完 "User: xxx" 就点续写，若不加换行，模型输出会直接粘在冒号后面：
+  //     User: 我对太清剑诀产生兴趣你缓缓睁开双眼…
+  // 加换行后：
+  //     User: 我对太清剑诀产生兴趣
+  //     你缓缓睁开双眼…
+  // 这是可读性的底线。
+  let appended = completionText.value.endsWith('\n') ? '' : '\n'
+
+  const render = () => {
+    completionText.value = completionText.value.slice(0, baseLen) + appended
+    scrollCompletionToEnd()
+  }
+  render()
 
   const ok = await complete(src, {
     preset: completionPreset.value,
     onChunk: (chunk) => {
       appended += chunk
-      // 直接改写文本域：base + 已追加内容
-      completionText.value = completionText.value.slice(0, baseLen) + appended
-      scrollCompletionToEnd()
+      render()
     },
     onFinished: (r) => {
-      // 生成结束补 inject_end（如 "\n\nUser: "），把下一轮入口留好
+      // 生成结束补 inject_end（如 "\n\nUser: "），把下一轮入口留好。
+      //
+      // ★ 先 rstrip 掉尾部空白再加分隔符 —— 这是修「换行随轮次递增」的关键。
+      // 模型输出常带尾随换行，若不清理，每轮都会多累积几个，
+      // 第 N 轮就会出现 2N 个空行。
+      appended = appended.replace(/\s+$/, '')
       const tail = r?.inject_end || ''
-      if (tail) {
-        appended += tail
-        completionText.value = completionText.value.slice(0, baseLen) + appended
-        scrollCompletionToEnd()
-      }
+      if (tail) appended += tail
+      render()
     },
   })
 
@@ -604,7 +619,7 @@ const reuseRatio = computed(() => {
             <el-radio-button value="completion">续写</el-radio-button>
           </el-radio-group>
         </div>
-        <div class="head-actions">
+        <div v-if="mode === 'chat'" class="head-actions">
           <el-tooltip content="整段历史 + 本轮消息重新生成，后端会回滚 state">
             <el-button size="small" text :disabled="isStreaming || messages.length < 2" @click="onRegenerate">
               重新生成
@@ -616,10 +631,12 @@ const reuseRatio = computed(() => {
         </div>
       </div>
 
-      <div ref="messagesEl" class="messages">
-        <p v-if="!messages.length" class="empty-hint">
-          {{ mode === 'completion' ? '在下方贴入原文，点「续写」开始' : '开始一段新对话' }}
-        </p>
+      <!--
+        续写模式**不显示消息列表** —— 文本域本身就是完整内容。
+        若两者同时出现，用户会看到文本域和消息列表两份重复的东西。
+      -->
+      <div v-if="mode === 'chat'" ref="messagesEl" class="messages">
+        <p v-if="!messages.length" class="empty-hint">开始一段新对话</p>
 
         <div v-for="(m, i) in messages" :key="i" class="msg" :class="m.role">
           <div class="msg-role">{{ m.role === 'user' ? '你' : '模型' }}</div>
@@ -1023,10 +1040,29 @@ const reuseRatio = computed(() => {
   gap: 8px;
 }
 
-/* 续写模式：文本域要能从底部区域向上撑开 */
-.chat-panel .composer:has(.completion-area) {
+/*
+ * 续写模式：composer 必须撑满整个卡片剩余空间。
+ *
+ * 之前文本域只占下半部分，上半留白 —— 因为 .chat-panel 是 flex 列布局，
+ * .messages 隐藏后 composer 仍按内容高度排布，不会自动伸展。
+ * 这里用 :has() 精确选中"含续写文本域的 composer"，让它 flex:1 吃掉所有空间。
+ */
+.chat-panel:has(.completion-area) .composer {
   flex: 1;
   min-height: 0;
+}
+
+/* 续写模式下文本域本身也要能被 flex 拉伸 */
+.chat-panel:has(.completion-area) .completion-area {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-panel:has(.completion-area) .completion-area :deep(.el-textarea__inner) {
+  flex: 1;
+  height: auto;
 }
 
 .composer-actions {
