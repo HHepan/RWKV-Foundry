@@ -17,6 +17,7 @@
 
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Setting } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 
 import { chatApi, defaultInferParams, roleplayParams } from '@/api/chat'
@@ -31,6 +32,17 @@ const models = ref([]) // 可选模型（基底 + checkpoints）
 
 const roleList = ref([])
 const selectedRole = ref('none')
+
+// ── 角色卡管理 ───────────────────────────────────────────────────────────
+const roleDialog = ref(false)
+const roleEditing = ref(null)   // null = 新建模式
+const roleSaving = ref(false)
+const roleForm = ref({ id: '', name: '', content: '' })
+
+const currentRoleContent = computed(() => {
+  if (selectedRole.value === 'none') return ''
+  return roleList.value.find((r) => r.id === selectedRole.value)?.content || ''
+})
 
 const params = ref(defaultInferParams())
 const roleId = computed(() => (selectedRole.value === 'none' ? null : selectedRole.value))
@@ -195,6 +207,92 @@ function onRoleChange(val) {
   }
 }
 
+// ── 角色卡管理 ───────────────────────────────────────────────────────────
+async function loadRoleList() {
+  try {
+    const roles = await dataApi.listRoles()
+    roleList.value = [{ id: 'none', name: '无（普通对话）', content: '' }, ...(roles || [])]
+  } catch (err) {
+    ElMessage.error(`加载角色卡失败: ${err.message}`)
+  }
+}
+
+function openRoleManager() {
+  roleEditing.value = null
+  roleForm.value = { id: '', name: '', content: '' }
+  roleDialog.value = true
+}
+
+function startNewRole() {
+  roleEditing.value = null
+  roleForm.value = { id: '', name: '', content: '' }
+}
+
+function editRole(role) {
+  if (role.id === 'none') {
+    ElMessage.info('「无」是内置占位项，不可编辑')
+    return
+  }
+  roleEditing.value = role
+  roleForm.value = { id: role.id, name: role.name, content: role.content }
+  roleDialog.value = true
+}
+
+async function submitRole() {
+  const name = roleForm.value.name.trim()
+  const content = roleForm.value.content.trim()
+  if (!name) {
+    ElMessage.warning('请填写角色名称')
+    return
+  }
+  if (!content) {
+    ElMessage.warning('请填写角色设定')
+    return
+  }
+
+  roleSaving.value = true
+  try {
+    // 新建时 id 留空，由后端生成
+    const saved = await dataApi.saveRole({
+      id: roleEditing.value ? roleForm.value.id : undefined,
+      name,
+      content,
+    })
+    ElMessage.success(roleEditing.value ? `角色「${name}」已更新` : `角色「${name}」已创建`)
+    await loadRoleList()
+    // 新建/编辑后自动选中该角色
+    if (saved?.id) {
+      selectedRole.value = saved.id
+      onRoleChange(saved.id)
+    }
+    roleDialog.value = false
+    roleEditing.value = null
+  } catch (err) {
+    ElMessage.error(`保存失败: ${err.message}`)
+  } finally {
+    roleSaving.value = false
+  }
+}
+
+async function removeRole(role) {
+  if (role.id === 'none') return
+  try {
+    await ElMessageBox.confirm(`确定删除角色「${role.name}」？此操作不可撤销。`, '删除角色', {
+      type: 'warning',
+      confirmButtonText: '删除',
+    })
+    await dataApi.deleteRole(role.id)
+    ElMessage.success('角色已删除')
+    if (selectedRole.value === role.id) {
+      selectedRole.value = 'none'
+      onRoleChange('none')
+    }
+    await loadRoleList()
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(`删除失败: ${err.message}`)
+  }
+}
+
 async function saveParams() {
   if (!selectedModel.value) return
   try {
@@ -286,9 +384,15 @@ const reuseRatio = computed(() => {
 
         <el-form label-position="top" size="small">
           <el-form-item label="角色卡">
-            <el-select v-model="selectedRole" class="full" @change="onRoleChange">
-              <el-option v-for="r in roleList" :key="r.id" :label="r.name" :value="r.id" />
-            </el-select>
+            <div class="role-row">
+              <el-select v-model="selectedRole" class="role-select" @change="onRoleChange">
+                <el-option v-for="r in roleList" :key="r.id" :label="r.name" :value="r.id" />
+              </el-select>
+              <el-button size="small" :icon="Setting" @click="openRoleManager" />
+            </div>
+            <small v-if="currentRoleContent" class="hint role-preview">
+              {{ currentRoleContent.slice(0, 60) }}{{ currentRoleContent.length > 60 ? '…' : '' }}
+            </small>
           </el-form-item>
         </el-form>
 
@@ -435,6 +539,62 @@ const reuseRatio = computed(() => {
         <el-checkbox v-model="params.global_penalty">全局重复惩罚</el-checkbox>
       </div>
     </aside>
+
+    <!-- 角色卡管理 -->
+    <el-dialog
+      v-model="roleDialog"
+      :title="roleEditing ? `编辑角色：${roleEditing.name}` : '管理角色卡'"
+      width="760px"
+      top="6vh"
+    >
+      <div class="role-mgr">
+        <!-- 左：角色列表 -->
+        <div class="role-list-pane">
+          <div class="role-list-head">
+            <span>已有角色（{{ roleList.length }}）</span>
+            <el-button size="small" type="primary" plain @click="startNewRole">新建</el-button>
+          </div>
+          <div class="role-list">
+            <div
+              v-for="r in roleList"
+              :key="r.id"
+              class="role-item"
+              :class="{ active: roleEditing && roleEditing.id === r.id, builtin: r.id === 'none' }"
+              @click="r.id !== 'none' && editRole(r)"
+            >
+              <div class="role-item-name">{{ r.name }}</div>
+              <div class="role-item-ops" v-if="r.id !== 'none'">
+                <el-button size="small" text @click.stop="editRole(r)">改</el-button>
+                <el-button size="small" text type="danger" @click.stop="removeRole(r)">删</el-button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 右：编辑区 -->
+        <div class="role-edit-pane">
+          <el-form label-position="top" size="small">
+            <el-form-item label="角色名称">
+              <el-input v-model="roleForm.name" placeholder="例如：助手 / 猫娘 / 翻译官" maxlength="40" show-word-limit />
+            </el-form-item>
+            <el-form-item label="角色设定（会作为 System 提示注入）">
+              <el-input
+                v-model="roleForm.content"
+                type="textarea"
+                :rows="14"
+                placeholder="描述这个角色的身份、语气、行为准则…"
+              />
+            </el-form-item>
+          </el-form>
+          <div class="role-actions">
+            <el-button size="small" @click="startNewRole">清空表单</el-button>
+            <el-button size="small" type="primary" :loading="roleSaving" @click="submitRole">
+              {{ roleEditing ? '保存修改' : '新建角色' }}
+            </el-button>
+          </div>
+        </div>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -675,5 +835,110 @@ const reuseRatio = computed(() => {
   color: var(--foundry-text-dim);
   font-style: normal;
   font-weight: 400;
+}
+
+/* ── 角色卡选择行 ─────────────────────────────────────────────────────── */
+.role-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  width: 100%;
+}
+
+.role-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.role-preview {
+  display: block;
+  margin-top: 4px;
+  color: var(--foundry-text-dim);
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+/* ── 角色卡管理对话框 ─────────────────────────────────────────────────── */
+.role-mgr {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 14px;
+  min-height: 380px;
+}
+
+.role-list-pane {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--foundry-border);
+  padding-right: 12px;
+  min-height: 0;
+}
+
+.role-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--foundry-text-dim);
+  margin-bottom: 8px;
+}
+
+.role-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.role-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.role-item:hover {
+  background: #f2f4f7;
+}
+
+.role-item.active {
+  background: #fdeee8;
+  color: #b8432a;
+  font-weight: 600;
+}
+
+.role-item.builtin {
+  cursor: default;
+  color: var(--foundry-text-dim);
+}
+
+.role-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.role-item-ops {
+  display: flex;
+  gap: 0;
+  flex: 0 0 auto;
+}
+
+.role-edit-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.role-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 10px;
 }
 </style>
