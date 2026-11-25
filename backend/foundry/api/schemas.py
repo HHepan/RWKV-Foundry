@@ -234,6 +234,9 @@ class ChatResultResponse(BaseModel):
     stopped: bool
     tokens_fed: int
     tokens_reused: int
+    #: 续写专用：生成结束后应追加到文本域末尾的分隔符
+    #: （如 "\n\nUser: "），对齐 RWKV-Runner 的 injectEnd 机制。
+    inject_end: str = ""
 
 
 # ── 角色卡 ───────────────────────────────────────────────────────────────

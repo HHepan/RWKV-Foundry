@@ -808,6 +808,16 @@ def complete(
             break
     out["content"] = content
 
+    # ★ 把 inject_end 一并返回，供前端追加到文本域末尾。
+    #
+    # 这是对齐 RWKV-Runner 交互的关键：Runner 在生成结束后执行
+    #     setPrompt(prompt + answer + injectEnd)
+    # 于是文本域末尾自动出现 "\n\nUser: "，光标天然落在下一轮的入口，
+    # 用户直接往下写就行 —— 不需要另开输入框再点发送。
+    #
+    # 若没有这一步，用户续写完还得手动敲 "User: " 才能继续，体验割裂。
+    out["inject_end"] = preset_cfg.get("inject_end") or ""
+
     return out
 
 

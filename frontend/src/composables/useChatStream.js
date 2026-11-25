@@ -215,7 +215,7 @@ export function useChatStream({ getModelRef, getParams, getRoleId, getSessionNam
    * @param {'novel'|'scene'|'story'} [opts.preset]
    * @returns {Promise<boolean>}
    */
-  async function complete(text, { preset = 'novel' } = {}) {
+  async function complete(text, { preset = 'novel', onChunk, onFinished } = {}) {
     const src = (text || '').trim()
     if (!src || !getModelRef() || isStreaming.value) return false
 
@@ -234,20 +234,13 @@ export function useChatStream({ getModelRef, getParams, getRoleId, getSessionNam
       if (m.content) history.push({ role: 'assistant', content: m.content })
     }
 
-    // 续写产物单独一条消息，原文挂在 source 上（界面可折叠显示）
-    messages.value.push({
-      role: 'assistant',
-      content: '',
-      thinking: '',
-      visibleThinking: '',
-      showThinking: true,
-      streaming: true,
-      raw: '',
-      kind: 'completion',
-      source: src,
-      preset,
-      showSource: false,
-    })
+    // ★ 续写不再往 messages 里塞消息。
+    //
+    // 对齐 RWKV-Runner 的交互：整段文本域就是"对话本身"，
+    // 模型输出直接追加到文本域末尾，用户在那之后接着写。
+    // 若仍往 messages 塞一条，界面上会出现"文本域 + 消息列表"两份重复内容。
+    //
+    // 流式内容通过 onChunk 回调交给外层（直接 append 到文本域）。
     isStreaming.value = true
     isThinking.value = true
     error.value = ''
@@ -267,30 +260,34 @@ export function useChatStream({ getModelRef, getParams, getRoleId, getSessionNam
           history,
         },
         {
-          onContent: applyChunk,
+          // 每个增量直接交给外层追加到文本域，由它负责渲染
+          onContent: (chunk) => {
+            if (onChunk) onChunk(chunk)
+          },
           onResult: (r) => {
             stats.value = {
               tokensFed: r.tokens_fed,
               tokensReused: r.tokens_reused,
               stopped: r.stopped,
             }
-            const msg = lastAssistant()
-            if (msg) {
-              msg.thinking = r.thinking || ''
-              msg.content = r.content || ''
-              msg.visibleThinking = msg.thinking
-            }
+            if (onFinished) onFinished(r)
           },
           onError: (m) => {
             error.value = m
           },
-          onDone: finalize,
+          onDone: () => {
+            isStreaming.value = false
+            isThinking.value = false
+            controller = null
+          },
           signal: controller.signal,
         },
       )
     } catch (err) {
       error.value = err.message || '续写失败'
-      finalize()
+      isStreaming.value = false
+      isThinking.value = false
+      controller = null
       return false
     }
     return !error.value

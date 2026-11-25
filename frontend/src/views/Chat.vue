@@ -59,6 +59,13 @@ const { messages, isStreaming, isThinking, error, stats, canSend, send, complete
 const mode = ref('chat')
 const completionText = ref('')
 const completionPreset = ref('novel')
+const completionRef = ref(null)
+
+const completionPlaceholder = computed(() =>
+  currentPreset.value?.prompt
+    ? '已填入示例原文，可直接续写；生成结果会追加在下方，接着往下写即可'
+    : '贴入需要续写的原文，点「续写」后结果会直接追加在这里',
+)
 
 /**
  * 续写场景预设 —— 从后端 /api/chat/completion-presets 拉取。
@@ -94,12 +101,46 @@ async function loadCompletionPresets() {
 const lastPresetPrompt = ref('')
 
 /** 选中预设时把示例 prompt 填进输入框（若当前为空或用户确认覆盖） */
-function onPresetChange(key) {
+/**
+ * 切换预设。
+ *
+ * ## 新交互下的语义变化
+ *
+ * 由于文本域现在是一块**持续生长的文档**（模型输出直接追加进去），
+ * 切换预设时文本域里往往已有上一轮的完整内容。
+ *
+ * 这里不再静默判断"能否覆盖"，而是明确询问用户：
+ *   - 文本域为空 → 直接填入示例
+ *   - 文本域有内容 → 提示是否用新预设的示例替换
+ *
+ * 静默覆盖会丢用户正在写的东西，静默不覆盖又会让用户以为切换没生效。
+ * 两种都不对，只能问。
+ */
+async function onPresetChange(key) {
   const p = COMPLETION_PRESETS.value.find((x) => x.key === key)
-  if (!p || !p.prompt) return
-  if (!completionText.value.trim() || completionText.value === lastPresetPrompt.value) {
-    completionText.value = p.prompt
+  if (!p) return
+
+  const hasContent = completionText.value.trim().length > 0
+  const sameAsPreset = completionText.value === p.prompt
+
+  if (!hasContent || sameAsPreset) {
+    if (p.prompt) completionText.value = p.prompt
     lastPresetPrompt.value = p.prompt
+    return
+  }
+
+  // 已有其他内容：问一次
+  try {
+    await ElMessageBox.confirm(
+      `文本域里已有内容。要用「${p.label}」的示例原文替换吗？\n\n` +
+        '选「替换」会清空现有文本；选「保留」则沿用当前内容，只切换场景参数。',
+      '切换续写场景',
+      { confirmButtonText: '替换', cancelButtonText: '保留', type: 'warning' },
+    )
+    completionText.value = p.prompt || ''
+    lastPresetPrompt.value = completionText.value
+  } catch {
+    /* 用户选择保留，什么都不做 */
   }
 }
 
@@ -203,22 +244,78 @@ function scrollToBottom() {
 watch(messages, scrollToBottom, { deep: true })
 
 async function onSend() {
-  if (mode.value === 'completion') {
-    const src = completionText.value.trim()
-    if (!src) {
-      ElMessage.warning('请贴入需要续写的原文')
-      return
-    }
-    const ok = await complete(src, { preset: completionPreset.value })
-    if (!ok && error.value) ElMessage.error(error.value)
-    return
-  }
-
   const text = userInput.value.trim()
   if (!text) return
   userInput.value = ''
   const ok = await send(text)
   if (!ok && error.value) ElMessage.error(error.value)
+}
+
+/**
+ * 续写：对齐 RWKV-Runner 的交互。
+ *
+ * ## 与对话模式的根本区别
+ *
+ * 对话：输入框写问题 → 发出去 → 消息列表多一条问答
+ * 续写：**只有一个文本域**，模型输出流式追加到它末尾，用户在那之后接着写
+ *
+ * 实现要点（对应 Runner 的 Completion.tsx）：
+ *
+ *    Runner:  setPrompt(prompt + answer + injectEnd)
+ *    我们:    completionText += chunk          （逐 token 追加）
+ *            completionText += inject_end     （结束时补下一轮入口）
+ *
+ * 因为有了 inject_end，用户续写完看到的是：
+ *
+ *      <原有文本><模型续写>
+ *      User: |          ← 光标天然落在这里，直接往下写
+ *
+ * 不需要另开输入框，也不需要手动敲 "User: "。
+ */
+async function onComplete() {
+  const src = completionText.value.trim()
+  if (!src) {
+    ElMessage.warning('请先贴入需要续写的原文')
+    return
+  }
+
+  // 记录本次提交时的文本长度。流式追加从这里开始，
+  // 避免把用户已写的前文当作模型输出重复渲染。
+  const baseLen = completionText.value.length
+  let appended = ''
+
+  const ok = await complete(src, {
+    preset: completionPreset.value,
+    onChunk: (chunk) => {
+      appended += chunk
+      // 直接改写文本域：base + 已追加内容
+      completionText.value = completionText.value.slice(0, baseLen) + appended
+      scrollCompletionToEnd()
+    },
+    onFinished: (r) => {
+      // 生成结束补 inject_end（如 "\n\nUser: "），把下一轮入口留好
+      const tail = r?.inject_end || ''
+      if (tail) {
+        appended += tail
+        completionText.value = completionText.value.slice(0, baseLen) + appended
+        scrollCompletionToEnd()
+      }
+    },
+  })
+
+  if (!ok && error.value) {
+    ElMessage.error(error.value)
+    // 失败时回滚到提交前的状态，避免文本域里留着半截内容
+    completionText.value = completionText.value.slice(0, baseLen)
+  }
+}
+
+/** 让文本域滚动到末尾，用户能立刻看到新生成的内容 */
+function scrollCompletionToEnd() {
+  nextTick(() => {
+    const el = completionRef.value?.textarea
+    if (el) el.scrollTop = el.scrollHeight
+  })
 }
 
 /** 切换模式时清空提示，避免把对话报错带到续写界面 */
@@ -568,7 +665,7 @@ const reuseRatio = computed(() => {
           />
         </template>
 
-        <!-- 续写模式 -->
+        <!-- 续写模式：单一大文本域，对齐 RWKV-Runner -->
         <template v-else>
           <div class="completion-bar">
             <el-select v-model="completionPreset" size="small" class="preset-select" @change="onPresetChange">
@@ -581,15 +678,29 @@ const reuseRatio = computed(() => {
             </el-select>
             <span class="hint preset-hint">{{ currentPresetHint }}</span>
             <el-button size="small" text @click="completionText = ''" :disabled="!completionText">
-              清空原文
+              清空
             </el-button>
           </div>
+
+          <!--
+            ★ 这是对齐 RWKV-Runner 的核心改动。
+
+            整段文本域就是"对话本身"：
+              1. 预设把示例 prompt 填进来
+              2. 点"续写"后，模型输出**流式追加到这个文本域**
+              3. 生成结束后自动补 inject_end（如 "\n\nUser: "）
+              4. 用户直接在末尾接着写，再点"续写" —— 不需要另开输入框
+
+            这样交互是"一条不断生长的文档"，而不是"提问-回答"。
+          -->
           <el-input
+            ref="completionRef"
             v-model="completionText"
             type="textarea"
-            :rows="6"
+            :rows="14"
             resize="none"
-            placeholder="把需要续写的原文贴进来（小说段落 / 场景描写 / 故事情节）…"
+            class="completion-area"
+            :placeholder="completionPlaceholder"
             :disabled="!selectedModel"
           />
         </template>
@@ -613,7 +724,7 @@ const reuseRatio = computed(() => {
             type="primary"
             size="small"
             :disabled="!canSend || !completionText.trim()"
-            @click="onSend"
+            @click="onComplete"
           >
             续写
           </el-button>
@@ -912,6 +1023,12 @@ const reuseRatio = computed(() => {
   gap: 8px;
 }
 
+/* 续写模式：文本域要能从底部区域向上撑开 */
+.chat-panel .composer:has(.completion-area) {
+  flex: 1;
+  min-height: 0;
+}
+
 .composer-actions {
   display: flex;
   align-items: center;
@@ -1105,6 +1222,19 @@ const reuseRatio = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 续写大文本域：独占剩余空间，像一块不断生长的文档 */
+.completion-area {
+  flex: 1;
+  min-height: 0;
+}
+
+.completion-area :deep(.el-textarea__inner) {
+  height: 100%;
+  font-family: var(--foundry-mono);
+  font-size: 13px;
+  line-height: 1.7;
 }
 
 /* 续写原文折叠区 */
