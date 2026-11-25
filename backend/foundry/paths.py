@@ -217,13 +217,60 @@ def safe_name(name: str, *, kind: str = "名称") -> str:
 def safe_join(base: Path, *parts: str, kind: str = "路径") -> Path:
     """把各段名称安全地拼到 base 下，并确认结果确实位于 base 之内。
 
-    双重防线：先按 ``safe_name`` 拒绝可疑字符，再用 ``resolve()`` 比对父目录，
-    防止符号链接绕过。
+    ## 校验放在「逻辑路径」上，而不是 resolve() 之后
+
+    起初这里用 ``base.joinpath(*parts).resolve()`` 比对父目录。这在
+    **base 下存在软链接时会把合法路径误判为越界**：
+
+        base_models/rwkv7-2.9b.pth -> /old/project/base_models/rwkv7-2.9b.pth
+
+    ``resolve()`` 跟到旧项目目录，于是 ``base_resolved not in target.parents``
+    成立，正常请求被 400 拒绝。实测就是这样挂掉的。
+
+    正确的判据是**逻辑路径**：`base / posix_normalized(parts)` 必须仍在 base
+    之下。软链接本身是合法的用户资产（跨盘复用权重是常见需求），
+    不该被当作攻击。
+
+    仍然能拦住真正的穿越，因为：
+      1. ``safe_name`` 已拒绝 ``..``、``/``、``\\`` 和非法字符
+      2. ``os.path.normpath`` 后再比对前缀，``..`` 无法逃逸
     """
     for part in parts:
         safe_name(part, kind=kind)
-    target = base.joinpath(*parts).resolve()
-    base_resolved = base.resolve()
-    if target != base_resolved and base_resolved not in target.parents:
+
+    # 第一道：逻辑路径校验（不解析软链）。拦住 ../ 这类纯路径穿越。
+    logical = Path(os.path.normpath(os.path.join(str(base), *parts)))
+    base_logical = Path(os.path.normpath(str(base)))
+
+    if logical != base_logical and base_logical not in logical.parents:
         raise PathTraversalError(f"{kind}越界: {parts} 不在 {base} 之内")
-    return target
+
+    # 第二道：软链目标校验，必须**逐段**检查。
+    #
+    # 关键：软链可能出现在中间路径段上（base/link/file.txt 里的 link），
+    # 只检查最终路径的 is_symlink() 是查不出来的 —— 最终文件可能根本不存在。
+    #
+    # 为什么要区分「文件软链」和「目录软链」：
+    #
+    #   文件软链（允许）：base_models/rwkv7-2.9b.pth -> /other/.../rwkv7-2.9b.pth
+    #       跨盘复用权重是正常需求，指向普通文件，只读无风险。
+    #
+    #   目录软链（拒绝）：base/link -> /etc
+    #       后续任何写入都会落到 /etc 下，这是真正的逃逸。
+    cursor = base_logical
+    for part in parts:
+        cursor = cursor / part
+        if not cursor.is_symlink():
+            continue
+        try:
+            real = cursor.resolve()
+        except OSError:
+            continue
+        if real == base_logical or base_logical in real.parents:
+            continue  # 仍指向 base 内部，无害
+        if real.is_dir():
+            raise PathTraversalError(
+                f"{kind}越界: {cursor} 是指向 base 外目录的软链 -> {real}"
+            )
+
+    return logical

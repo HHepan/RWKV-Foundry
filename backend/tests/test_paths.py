@@ -192,3 +192,66 @@ def test_rmtree_scenario_is_blocked(tmp_path):
     with pytest.raises(PathTraversalError):
         safe_join(checkpoints, "../victim", kind="文件夹名")
     assert (victim / "important.txt").exists()
+
+
+# ── 软链权重是合法资产，不能被误判为攻击 ────────────────────────────────
+def test_safe_join_allows_symlinked_file(tmp_path):
+    """★ 文件软链必须放行 —— 跨盘复用权重是正常需求。
+
+    ## 这里挂过一次
+
+    最早 safe_join 用 resolve() 比对父目录，结果 base_models 下指向旧项目
+    的权重软链全部被判为"越界"，真实训练一启动就 400：
+
+        模型名越界: ('rwkv7-g1e-2.9b-....pth',) 不在 .../base_models 之内
+
+    而那个路径完全合法 —— 只是 resolve() 跟到了软链目标所在的另一目录。
+    """
+    base = tmp_path / "base_models"
+    base.mkdir()
+    other = tmp_path / "other_models"
+    other.mkdir()
+    real = other / "rwkv7-g1e-2.9b-20260312-ctx8192.pth"
+    real.write_bytes(b"weights")
+    link = base / "rwkv7-g1e-2.9b-20260312-ctx8192.pth"
+    link.symlink_to(real)
+
+    got = safe_join(base, link.name, kind="模型名")
+    assert got == base / link.name
+    assert got.is_file()
+
+
+def test_safe_join_allows_symlinked_file_with_dots_in_name(tmp_path):
+    """RWKV 权重名含多个点，软链仍应放行。"""
+    base = tmp_path / "bm"
+    base.mkdir()
+    real = tmp_path / "x.pth"
+    real.write_bytes(b"w")
+    (base / "rwkv7-g1f-7.2b-20260414-ctx8192.pth").symlink_to(real)
+
+    got = safe_join(base, "rwkv7-g1f-7.2b-20260414-ctx8192.pth", kind="模型名")
+    assert got.is_file()
+
+
+def test_safe_join_blocks_symlink_dir_nested(tmp_path):
+    """中间路径段是目录软链、指向 base 之外 → 仍必须拒绝。"""
+    base = tmp_path / "b"
+    base.mkdir()
+    outside = tmp_path / "out"
+    outside.mkdir()
+    (base / "sub").symlink_to(outside)
+
+    with pytest.raises(PathTraversalError):
+        safe_join(base, "sub", "escape.txt")
+
+
+def test_safe_join_allows_symlink_within_base(tmp_path):
+    """软链指向 base 内部：无害，应放行。"""
+    base = tmp_path / "b"
+    base.mkdir()
+    real = base / "real.pth"
+    real.write_bytes(b"w")
+    (base / "alias.pth").symlink_to(real)
+
+    got = safe_join(base, "alias.pth")
+    assert got == base / "alias.pth"
