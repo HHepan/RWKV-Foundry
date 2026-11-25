@@ -164,14 +164,14 @@ async function onRegenerate() {
 async function onClear() {
   try {
     await ElMessageBox.confirm(
-      '清空会调用 /reset-state，让模型彻底忘记本次对话的 state。确定继续？',
+      '清空会删除该会话的持久化对话记录，并重置模型的循环态。刷新后不会恢复。确定继续？',
       '清空对话',
       { type: 'warning', confirmButtonText: '清空' },
     )
     await clear()
     pplPoints.value = []
     updatePplChart()
-    ElMessage.success('已清空，模型状态已重置')
+    ElMessage.success('对话记录已删除，模型状态已重置')
   } catch (err) {
     if (err !== 'cancel') ElMessage.error(err.message)
   }

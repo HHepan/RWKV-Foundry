@@ -25,6 +25,7 @@
 
 import { computed, ref, shallowRef } from 'vue'
 import { chatApi } from '../api/chat'
+import { dataApi } from '../api/data'
 
 const THINK_START = '<' + 'think' + '>'
 const THINK_END = '<' + '/think' + '>'
@@ -264,20 +265,57 @@ export function useChatStream({ getModelRef, getParams, getRoleId, getSessionNam
     controller = null
   }
 
-  /** 清空对话并让模型忘记历史 */
+  /**
+   * 清空对话：**同时清数据库记录和模型循环态**。
+   *
+   * ## 这里修过一个真实缺陷
+   *
+   * 原实现只调 resetState（清内存里的 state），完全没动数据库。
+   * 于是用户清空后一刷新，前端 loadHistory 又从 chat-data 读回来 ——
+   * 表现为「清空无效，内容自己长回来」。
+   *
+   * 正确的清空要做两件事：
+   *   1. DELETE /api/data/chat-data  删持久化记录（否则刷新就复活）
+   *   2. POST /api/chat/reset-state  清模型 state（否则模型仍记得上下文）
+   *
+   * ## 顺序：先删库，后重置 state
+   *
+   * 若删库失败，用户应看到错误而不是"假装已清空"——所以删库放在前面，
+   * 失败就直接抛出，不清 UI。反过来若先重置 state 再删库失败，
+   * 用户会以为清空成功但刷新后内容回来，更难排查。
+   *
+   * 删库返回 404（本就没有历史记录）属于正常情况，不算失败。
+   */
   async function clear() {
     abort()
+
+    const modelRef = getModelRef()
+    const session = getSessionName?.() || ''
+
+    if (modelRef) {
+      try {
+        await dataApi.deleteChatData(modelRef, session)
+      } catch (err) {
+        // 404 = 本来就没有记录，可以继续清 UI
+        if (err?.status !== 404) {
+          error.value = `清空失败: ${err.message}`
+          throw err
+        }
+      }
+    }
+
+    // 数据库已清，再清模型循环态
+    if (modelRef) {
+      try {
+        await chatApi.resetState(modelRef, session)
+      } catch {
+        /* 模型态重置失败不影响数据已删除这一事实 */
+      }
+    }
+
     messages.value = []
     stats.value = null
     error.value = ''
-    const modelRef = getModelRef()
-    if (modelRef) {
-      try {
-        await chatApi.resetState(modelRef, getSessionName?.() || '')
-      } catch {
-        /* 重置失败不阻断清空 UI */
-      }
-    }
   }
 
   function loadMessages(list) {

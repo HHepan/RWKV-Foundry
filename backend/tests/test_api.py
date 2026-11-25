@@ -533,3 +533,54 @@ def _mk_recipe():
     from foundry.domain.recipe import Recipe
 
     return Recipe(base_model="rwkv7-g1a-0.1b.pth", dataset="out/train.jsonl", model_size="0.1B")
+
+
+# ── 清空对话必须真正删除持久化记录 ──────────────────────────────────────
+def test_clear_chat_data_actually_deletes(model_client):
+    """★ 清空后刷新，内容不得复活。
+
+    ## 这里修过一个真实缺陷
+
+    前端 clear() 原本只调 /api/chat/reset-state（清内存 state），
+    完全没删数据库里的对话记录。用户清空后一刷新，loadHistory 又从
+    chat-data 读回来 —— 表现为「清空无效，内容自己长回来」。
+
+    本测试锁定后端契约：DELETE /api/data/chat-data 之后，
+    GET 必须返回 404（记录确实没了），而不是旧内容。
+    """
+    ref = "base_models/rwkv7-g1a-0.1b"
+    model_client.post(
+        "/api/chat/chat",
+        json={"model_ref": ref, "message": "会被清掉的问题", "history": [], "session_name": "clr"},
+    )
+
+    got = model_client.get("/api/data/chat-data", params={"model": ref, "session": "clr"})
+    assert got.status_code == 200
+    assert len(got.json()["dialogue_content"]) == 2
+
+    deleted = model_client.delete("/api/data/chat-data", params={"model": ref, "session": "clr"})
+    assert deleted.status_code == 200
+
+    after = model_client.get("/api/data/chat-data", params={"model": ref, "session": "clr"})
+    assert after.status_code == 404, "删除后记录仍然存在 —— 刷新会复活"
+
+
+def test_clear_chat_data_is_idempotent(model_client):
+    """会话不存在时删除也算成功 —— 删空对话不该报错。"""
+    r = model_client.delete(
+        "/api/data/chat-data",
+        params={"model": "base_models/rwkv7-g1a-0.1b", "session": "never-existed"},
+    )
+    assert r.status_code == 200
+    assert r.json()["message"] == "删除成功"
+
+
+def test_clear_chat_data_twice(model_client):
+    """连续删两次都应成功（第二次目标已不存在）。"""
+    ref = "base_models/rwkv7-g1a-0.1b"
+    model_client.post(
+        "/api/chat/chat",
+        json={"model_ref": ref, "message": "q", "history": [], "session_name": "twice"},
+    )
+    assert model_client.delete("/api/data/chat-data", params={"model": ref, "session": "twice"}).status_code == 200
+    assert model_client.delete("/api/data/chat-data", params={"model": ref, "session": "twice"}).status_code == 200

@@ -721,10 +721,24 @@ def get_chat_data(state: AppState, model_ref: str, session_name: str = "") -> di
 
 
 def delete_chat_data(state: AppState, model_ref: str, session_name: str = "") -> None:
+    """删除某个会话的持久化对话记录，并清掉引擎里的循环态。
+
+    ## 为什么是幂等的
+
+    删除操作天然应当幂等：目标不存在 = 已达到期望状态 = 成功。
+
+    之前这里在找不到记录时抛 NotFoundError，导致「清空一个还没聊过的新对话」
+    在 UI 上报错。前端被迫吞掉 404 才能正常工作 —— 那是把语义问题推给了调用方。
+
+    现在无论记录是否存在都返回成功：找到就删，找不到也无妨。
+    引擎态同样无条件清理，避免残留脏 state。
+    """
+    session_key = f"{model_ref}|{session_name}" if session_name else model_ref
+
     for row in repo.list_sessions(state.db, model_ref=model_ref):
         if row["name"] == session_name:
             repo.delete_session(state.db, row["id"])
-            session_key = f"{model_ref}|{session_name}" if session_name else model_ref
-            state.engine.drop_session(session_key)
-            return
-    raise NotFoundError(f"对话记录不存在: {model_ref} / {session_name!r}")
+            break
+
+    # 无论数据库里有没有记录，内存里的循环态都要清掉
+    state.engine.drop_session(session_key)
