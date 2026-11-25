@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import time
 from pathlib import Path
 
@@ -40,6 +41,8 @@ from foundry.storage import ingest, repo
 from foundry.train.job import TrainError, TrainJob
 from foundry.train.preprocess import BinidxError, default_python_exe, run_preprocess
 from foundry.train.script import build_script, resolve_dataset_path, write_recipe, write_script
+
+logger = logging.getLogger("foundry")
 
 
 class ServiceError(FoundryError):
@@ -540,7 +543,17 @@ def delete_role(state: AppState, role_id: str) -> None:
 
 # ── 会话与对话 ───────────────────────────────────────────────────────────
 def ensure_model_loaded(state: AppState, model_ref: str) -> str:
-    """确保模型已加载。返回实际使用的 model_ref。"""
+    """确保模型已加载。返回实际使用的 model_ref。
+
+    ## 切换模型必须先卸载旧的
+
+    这是实际踩过的坑：从 2.9B 换到 13.3B 时，2.9B 仍占着约 6GB 显存。
+    13.3B 需要约 25GB，单卡只有 24GB —— 不先释放就直接 OOM，
+    而错误信息只会显示 cuda out of memory，很难定位到「上个模型没卸」。
+
+    因此顺序是：卸载 → 清空会话态 → 加载新模型。
+    即使加载失败，也不会留下半新半旧的脏状态。
+    """
     if state.engine.loaded and state.engine.model_ref == model_ref:
         return model_ref
 
@@ -549,9 +562,27 @@ def ensure_model_loaded(state: AppState, model_ref: str) -> str:
     if existing is not None:
         raise BusyError("训练进行中，暂不能切换推理模型（显存竞争）")
 
-    pipeline, tokenizer = state.loader.load(
-        str(stem), strategy=state.config.infer.strategy
-    )
+    # ★ 先卸载：释放旧权重与显存，再加载新模型
+    if state.engine.loaded:
+        logger.info("切换模型：卸载 %s → 加载 %s", state.engine.model_ref, model_ref)
+        state.loader.unload()
+        state.engine.detach()
+
+    try:
+        pipeline, tokenizer = state.loader.load(
+            str(stem), strategy=state.config.infer.strategy
+        )
+    except Exception as exc:  # noqa: BLE001
+        # 加载失败时保持「无模型」的干净状态，而不是留着半截状态
+        state.engine.detach()
+        raise ServiceError(
+            f"加载模型失败: {exc}\n"
+            f"  模型: {stem}.pth\n"
+            f"  显存策略: {state.config.infer.strategy}\n"
+            f"  提示: 13.3B 需要约 25GB，单卡 24GB 不够，需用双卡切分，例如\n"
+            f"        FOUNDRY_INFER_STRATEGY=\"cuda:0 bf16 -> cuda:1 bf16\""
+        ) from exc
+
     state.engine.attach(pipeline, tokenizer, model_ref=model_ref)
     return model_ref
 

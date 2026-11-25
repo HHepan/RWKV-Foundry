@@ -66,6 +66,18 @@ def create_app(
     """
     cfg = config or AppConfig.from_env()
 
+    # ★ 必须在任何 torch / rwkv import 之前设置 RWKV 环境变量。
+    #
+    # 这是全进程唯一的 strict=True 调用点：此刻 torch 一定还没被 import
+    # （应用刚创建，未加载任何模型）。若这里就发现 torch 已加载，说明
+    # 有模块在 import 期偷偷拉了 torch，属于必须立刻暴露的顺序错误。
+    #
+    # 之后再调用 bootstrap 都是幂等空操作，不会因 torch 已加载而报错
+    # —— 这正是「切换模型」能正常工作的原因。
+    from foundry.env import bootstrap
+
+    bootstrap(strict=True)
+
     logging.basicConfig(
         level=getattr(logging, cfg.logging.level, logging.INFO),
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",

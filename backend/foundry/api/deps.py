@@ -72,10 +72,19 @@ class CudaModelLoader:
         self._loaded: Any = None
 
     def load(self, model_path: str, *, strategy: str) -> tuple[Any, Any]:
-        # ★ 必须在 import torch 之前设置 RWKV 环境变量
+        # RWKV 环境变量必须在 import torch 之前生效。
+        #
+        # bootstrap() 是幂等的：首次成功后即打标记，后续调用直接返回。
+        # 因此这里用 **strict=False** —— 真正的顺序保证由 create_app 负责
+        # （它在任何 torch import 之前调用一次 strict=True）。
+        #
+        # 早前这里写的是 strict=True，导致切换模型时炸：
+        # 第一次加载 2.9B 时 torch 尚未 import；换到 13.3B 时 torch 已在
+        # sys.modules 里，strict 立刻抛 "环境变量设置过晚"。用户看到的就是
+        # 「换模型后对话报错」。
         from foundry.env import apply_rwkv_paths, bootstrap
 
-        bootstrap(strict=True)
+        bootstrap(strict=False)
         apply_rwkv_paths(self._paths.tokenizer_tools)
 
         import torch

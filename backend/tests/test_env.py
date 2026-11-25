@@ -23,6 +23,17 @@ RUBRIC_KEYS = ("RWKV_V7_ON", "RWKV_JIT_ON", "RWKV_CUDA_ON")
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
+    """每个用例都从「未 bootstrap」的干净状态开始。
+
+    bootstrap() 现在幂等（模块级 _bootstrapped 标记），一旦某个用例
+    执行成功就会置位，后续用例调用会直接返回 —— 那会让
+    「torch 已加载应警告/报错」这类断言静默失效。
+    因此必须逐用例重置。
+    """
+    from foundry import env as env_mod
+
+    monkeypatch.setattr(env_mod, "_bootstrapped", False, raising=False)
+
     for key in RUBRIC_KEYS:
         monkeypatch.delenv(key, raising=False)
     for key in ("FOUNDRY_RWKV_V7", "FOUNDRY_RWKV_JIT", "FOUNDRY_RWKV_CUDA"):
@@ -96,3 +107,44 @@ def test_rwkv_env_as_environ():
         "RWKV_JIT_ON": "0",
         "RWKV_CUDA_ON": "1",
     }
+
+
+# ── 幂等性：切换模型时重复调用 bootstrap 不得报错 ────────────────────────
+def test_bootstrap_is_idempotent_after_torch_loaded(monkeypatch):
+    """★ 首次成功后，即使 torch 已加载，再次调用也不得抛错。
+
+    ## 这是修过的线上 bug
+
+    CudaModelLoader 每次 load_model 都调 bootstrap(strict=True)。
+    第一次加载 2.9B 时 torch 还没 import，成功；切到 13.3B 时 torch 已在
+    sys.modules，strict 立刻抛 "环境变量设置过晚" —— 用户看到的就是
+    「换模型后对话报错」。
+
+    环境变量本是进程级一次性设置，重复调用应完全无害。
+    """
+    import sys as _sys
+
+    from foundry import env as env_mod
+
+    # 第一次：torch 未加载，strict 成功
+    monkeypatch.delitem(_sys.modules, "torch", raising=False)
+    bootstrap(strict=True)
+    assert env_mod.is_bootstrapped() is True
+
+    # 第二次：模拟「已经 import 过 torch」，strict 也不该抛
+    monkeypatch.setitem(_sys.modules, "torch", type(_sys)("torch"))
+    env2 = bootstrap(strict=True)  # 不应抛 RuntimeError
+    assert env2.v7 is True
+
+
+def test_bootstrap_idempotent_no_warning(monkeypatch, capsys):
+    """幂等路径不应再打印「设置过晚」警告。"""
+    import sys as _sys
+
+    monkeypatch.delitem(_sys.modules, "torch", raising=False)
+    bootstrap(strict=True)
+    capsys.readouterr()  # 清空
+
+    monkeypatch.setitem(_sys.modules, "torch", type(_sys)("torch"))
+    bootstrap(strict=False)
+    assert "设置过晚" not in capsys.readouterr().err

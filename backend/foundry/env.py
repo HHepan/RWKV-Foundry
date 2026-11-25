@@ -61,18 +61,54 @@ def torch_already_loaded() -> bool:
     return "torch" in sys.modules
 
 
+#: bootstrap 是否已经成功执行过（模块级一次性标记）
+_bootstrapped: bool = False
+
+
+def is_bootstrapped() -> bool:
+    """环境变量是否已经在本进程生效过。"""
+    return _bootstrapped
+
+
 def bootstrap(*, strict: bool = False) -> RWKVEnv:
-    """设置 RWKV 环境变量。
+    """设置 RWKV 环境变量。**幂等，全进程只需成功一次。**
 
-    :param strict: 为 True 时，若 torch 已在 ``sys.modules`` 中则抛错。
-                   服务启动应使用 strict=True，脚本与测试可用默认值。
-    :returns: 实际生效的配置。
+    :param strict: 为 True 时，若本函数**从未**成功执行且 torch 已被 import，
+                   则抛错。服务启动应使用 strict=True 以便尽早暴露顺序错误。
+    :returns: 期望的配置。
 
-    调用方责任：必须在 import torch 之前调用。本函数无法回滚已加载的 torch，
-    只能在检测到顺序错误时报警。
+    ## 为什么必须幂等
+
+    这里踩过一个线上 bug：CudaModelLoader 每次 load_model 都调
+    ``bootstrap(strict=True)``。第一次加载模型（如 2.9B）时 torch 尚未 import，
+    执行成功；**切换到第二个模型（如 13.3B）时 torch 已在 sys.modules 里**，
+    strict 模式立即抛错：
+
+        RWKV 环境变量设置过晚：torch 已被 import …
+
+    用户看到的就是「换模型后对话报错」。
+
+    环境变量本就是进程级一次性设置，第二次调用毫无意义。因此：
+      - 首次成功执行后置 ``_bootstrapped = True``
+      - 后续调用若已置位，直接返回，不再检查 torch 顺序
+    这样「切模型」这类重复调用完全无害。
+
+    ## 调用方责任
+
+    真正需要保证的是「第一次调用发生在 import torch 之前」。
+    服务入口（create_app）已负责这件事；loader 里的调用只是兜底。
     """
+    global _bootstrapped
+
     env = desired_env()
     settings = env.as_environ()
+
+    # 已成功执行过：环境变量已经在进程里生效，直接返回。
+    # 此时 torch 必然已 import（模型都加载过了），不该再报警。
+    if _bootstrapped:
+        for key, value in settings.items():
+            os.environ.setdefault(key, value)
+        return env
 
     late = torch_already_loaded()
     if late:
@@ -89,6 +125,7 @@ def bootstrap(*, strict: bool = False) -> RWKVEnv:
     for key, value in settings.items():
         os.environ[key] = value
 
+    _bootstrapped = True
     return env
 
 
