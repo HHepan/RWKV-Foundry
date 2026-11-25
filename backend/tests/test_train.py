@@ -121,7 +121,9 @@ def test_build_script_quotes_paths(recipe, paths, tmp_path):
     base_arg = base_arg[: base_arg.index("\n")]
     # 路径必须以单引号开始（而非裸写），否则 $x 会被展开成空字符串
     assert "'" in base_arg
-    assert f"'{weird}/m'" in content
+    # build_script 会自动补 .pth：train.py 用 os.path.exists() 检查，
+    # 不会自己加后缀（与推理端 RWKV_x070_Dual 行为不同）
+    assert f"'{weird}/m.pth'" in content
     assert f"'{weird}'" in content
 
 
@@ -489,3 +491,49 @@ def test_graceful_sigterm_preferred_over_kill(paths, recipe, tmp_path, monkeypat
     status, _ = j.kill(grace=3.0)
     assert status is JobStatus.STOPPED
     assert subprocess.signal.SIGKILL not in called, "正常情况下不应 SIGKILL"
+
+
+# ── 权重路径后缀（真训练时才暴露的 bug）─────────────────────────────────
+def test_build_script_appends_pth_suffix(recipe, paths, tmp_path):
+    """★ train.py 用 os.path.exists() 检查 --load_model，不会自动补 .pth。
+
+    实测：传不带后缀的路径给真实 train.py（RWKV-PEFT 989d28d）会立即
+        --load_model /path/to/model does not exist
+    并退出 1。而推理端 RWKV_x070_Dual 会自己补后缀 —— 两端行为不一致，
+    必须由 build_script 保证输出带 .pth。
+
+    这是只在真实训练机上暴露的缺陷：所有 fake pipeline 测试都发现不了。
+    """
+    content = build_script(
+        recipe, paths, run_dir=tmp_path,
+        base_model_path=tmp_path / "rwkv7-g1e-2.9b-20260312-ctx8192",
+        binidx_prefix=tmp_path / "d",
+    )
+    assert "rwkv7-g1e-2.9b-20260312-ctx8192.pth" in content
+
+
+def test_build_script_does_not_double_suffix(recipe, paths, tmp_path):
+    """已带 .pth 时不应重复追加。"""
+    content = build_script(
+        recipe, paths, run_dir=tmp_path,
+        base_model_path=tmp_path / "model.pth",
+        binidx_prefix=tmp_path / "d",
+    )
+    assert "model.pth.pth" not in content
+    assert "model.pth" in content
+
+
+def test_build_script_keeps_dots_in_model_name(recipe, paths, tmp_path):
+    """★ 不能用 Path.with_suffix：会把 rwkv7-g1e-2.9b 的 .9b 当扩展名替换。
+
+    Path("x/rwkv7-g1e-2.9b").with_suffix(".pth") → "x/rwkv7-g1e-2.pth"
+    这是错的。必须用字符串拼接。
+    """
+    content = build_script(
+        recipe, paths, run_dir=tmp_path,
+        base_model_path=tmp_path / "rwkv7-g1e-2.9b-20260312-ctx8192",
+        binidx_prefix=tmp_path / "d",
+    )
+    assert "rwkv7-g1e-2.9b-20260312-ctx8192.pth" in content
+    # 确认没有把 .9b 之类的片段顶掉
+    assert "rwkv7-g1e-2.pth" not in content

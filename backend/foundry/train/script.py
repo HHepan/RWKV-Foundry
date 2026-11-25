@@ -77,16 +77,30 @@ def build_script(
     """生成训练脚本内容（不落盘）。
 
     :param run_dir: 本次 run 的目录（proj_dir）
-    :param base_model_path: 基底权重绝对路径（不含 .pth 后缀，RWKV 自行追加）
+    :param base_model_path: 基底权重路径前缀（可含或不含 .pth）。本函数会补上后缀。
     :param binidx_prefix: 预处理后 binidx 的路径前缀（不含扩展名）
     """
     recipe.validate()
+
+    # ★ train.py 用 os.path.exists() 直接检查 --load_model，不会自动补后缀。
+    #
+    # 而推理端 RWKV_x070_Dual 会自己补 —— 两边行为不一致，必须分别处理。
+    # 实测：传不带 .pth 的路径给 train.py 会立即
+    #     "--load_model ... does not exist" 并退出 1。
+    #
+    # 不能用 Path.with_suffix('.pth')：RWKV 权重名含多个点
+    # （rwkv7-g1e-2.9b-20260312-ctx8192.pth），with_suffix 会把 ".2b" 之类的
+    # 片段当成扩展名替换掉，指向不存在的文件。只能用字符串拼接。
+    base_str = str(base_model_path)
+    if not base_str.endswith(".pth"):
+        base_str += ".pth"
+    base_model_file = Path(base_str)
 
     peft_dir = paths.peft_dir
     args = [
         "python",
         "train.py",
-        "--load_model", _q(base_model_path),
+        "--load_model", _q(base_model_file),
         "--proj_dir", _q(run_dir),
         "--data_file", _q(binidx_prefix),
         "--vocab_size", str(65536),
@@ -114,7 +128,7 @@ def build_script(
         "#!/bin/sh",
         "# 由 RWKV-Foundry 生成。请勿手工编辑——改配方后重新生成。",
         f"# 配方 hash: {recipe.hash}",
-        f"# 基底模型 : {base_model_path}",
+        f"# 基底模型 : {base_model_file}",
         "",
         "# 切换到 RWKV-PEFT 目录（其内部按相对路径查找模块）",
         f"cd {_q(peft_dir)} || exit 1",
