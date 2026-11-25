@@ -91,6 +91,10 @@ async function loadCompletionPresets() {
       hint: v.hint || '',
       prompt: v.prompt || '',
       stop: v.stop || '',
+      // inject_start 决定提交时是否要补 "\n\nAssistant: "
+      // 这是让文本域与模型实际输入对齐的关键
+      injectStart: v.inject_start || '',
+      injectEnd: v.inject_end || '',
     }))
   } catch (err) {
     ElMessage.warning(`加载续写预设失败: ${err.message}`)
@@ -273,55 +277,69 @@ async function onSend() {
  * 不需要另开输入框，也不需要手动敲 "User: "。
  */
 async function onComplete() {
-  const src = completionText.value.trim()
-  if (!src) {
+  const presetCfg = COMPLETION_PRESETS.value.find((x) => x.key === completionPreset.value)
+  const injStart = presetCfg?.injectStart || ''
+  const injEnd = presetCfg?.injectEnd || ''
+
+  // 对话式预设的结束标记（如 "\n\nUser: "）直接复用 inject_end；
+  // 纯续写预设没有 inject_end，用普通换行分隔。
+  const turnSep = injEnd || '\n'
+
+  let base = completionText.value
+
+  if (!base.trim()) {
     ElMessage.warning('请先贴入需要续写的原文')
     return
   }
 
-  // 记录本次提交时的文本长度。流式追加从这里开始，
-  // 避免把用户已写的前文当作模型输出重复渲染。
-  const baseLen = completionText.value.length
-
-  // ★ 模型输出前先补一个换行。
+  // ★ 方案 A 的核心：提交前把文本规范化成「模型将要消费的序列」。
   //
-  // 用户写完 "User: xxx" 就点续写，若不加换行，模型输出会直接粘在冒号后面：
-  //     User: 我对太清剑诀产生兴趣你缓缓睁开双眼…
-  // 加换行后：
-  //     User: 我对太清剑诀产生兴趣
-  //     你缓缓睁开双眼…
-  // 这是可读性的底线。
-  let appended = completionText.value.endsWith('\n') ? '' : '\n'
+  // 后端 build_completion_prompt 收到 text 后执行：
+  //     text.rstrip() + "\n\nAssistant: "     （对话式）
+  //     text.rstrip() + "\n"                    （纯续写）
+  //
+  // 因此文本域必须在提交时也变成同样的形态，否则下一轮的 fed_text
+  // 与前端文本前缀对不上，LCP 会在分隔符处断掉、复用率归零。
+  //
+  // 实测断点：
+  //     fed  = '原文\n\nAssistant: 输出'
+  //     front= '原文\n输出\n\nUser: ...'
+  //            ↑ '\n\nAssistant:' vs '\n' → LCP 只剩 12
+  base = base.replace(/\s+$/, '')
+  const normalized = injStart ? `${base}\n\nAssistant: ` : `${base}\n`
+
+  // 把规范化后的文本写回文本域 —— 用户看到的即模型看到的
+  completionText.value = normalized
+  scrollCompletionToEnd()
+
+  // 流式阶段只追加模型输出；结束后追加下一轮入口标记
+  let appended = ''
 
   const render = () => {
-    completionText.value = completionText.value.slice(0, baseLen) + appended
+    completionText.value = normalized + appended
     scrollCompletionToEnd()
   }
-  render()
 
-  const ok = await complete(src, {
+  const ok = await complete(normalized, {
     preset: completionPreset.value,
     onChunk: (chunk) => {
       appended += chunk
       render()
     },
     onFinished: (r) => {
-      // 生成结束补 inject_end（如 "\n\nUser: "），把下一轮入口留好。
-      //
-      // ★ 先 rstrip 掉尾部空白再加分隔符 —— 这是修「换行随轮次递增」的关键。
-      // 模型输出常带尾随换行，若不清理，每轮都会多累积几个，
-      // 第 N 轮就会出现 2N 个空行。
+      // 先 rstrip 掉模型输出的尾随空白，再追加分隔符。
+      // 不清理的话，模型每轮吐的尾随换行会逐轮累积（第N轮出现2N个空行）。
       appended = appended.replace(/\s+$/, '')
-      const tail = r?.inject_end || ''
-      if (tail) appended += tail
+      appended += turnSep
       render()
     },
   })
 
   if (!ok && error.value) {
     ElMessage.error(error.value)
-    // 失败时回滚到提交前的状态，避免文本域里留着半截内容
-    completionText.value = completionText.value.slice(0, baseLen)
+    // 失败回滚到规范化之前的内容，不让文本域留下半截
+    completionText.value = base
+    scrollCompletionToEnd()
   }
 }
 

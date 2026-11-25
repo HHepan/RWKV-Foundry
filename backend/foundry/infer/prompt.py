@@ -371,13 +371,25 @@ def build_completion_prompt(
     body = text.rstrip()
     parts.append(body)
 
+    # 幂等处理：若文本已经以角色标记结尾，就不要再补一次。
+    #
+    # 方案 A 下，前端提交时会把文本规范化成「模型将要消费的序列」，
+    # 也就是已经带了 "\n\nAssistant: "。后端若无条件再补一遍，
+    # 就会拼出 "Assistant:\n\nAssistant: " 这种重复标记 ——
+    # 模型会以为要连说两轮。
+    # body 已 rstrip，直接判断末尾即可
+    already_has_ast = body.endswith("Assistant:")
+
     if inject_start:
-        # 对话式：固定补 "\n\nAssistant:" + 尾随空格
-        # inject_start 形如 "\n\nAssistant: "，这里统一重建，避免形态漂移
-        parts.append("\n\nAssistant: ")
+        if already_has_ast:
+            # 已带标记：只补尾随空格，保持形态统一
+            parts.append(" ")
+        else:
+            parts.append("\n\nAssistant: ")
     else:
         # 纯续写：只补一个换行，让模型从新行起笔
-        parts.append("\n")
+        if not body.endswith("\n"):
+            parts.append("\n")
 
     return "".join(parts)
 
