@@ -584,3 +584,51 @@ def test_clear_chat_data_twice(model_client):
     )
     assert model_client.delete("/api/data/chat-data", params={"model": ref, "session": "twice"}).status_code == 200
     assert model_client.delete("/api/data/chat-data", params={"model": ref, "session": "twice"}).status_code == 200
+
+
+# ── 角色卡必须真正进入 prompt ────────────────────────────────────────────
+def test_role_card_is_injected_into_prompt(model_client):
+    """★ 选中角色后，角色设定必须出现在发给模型的内容里。
+
+    ## 这里修过一个完整链路断裂的缺陷
+
+    前端能选角色、后端把 role_id 存进 session 表，但
+    **从来没有把角色内容拼进 prompt**。于是用户问「你是谁」，
+    模型回答「我没有关于阿玄的记录」—— 角色卡形同虚设。
+
+    症状很隐蔽：UI 上下拉框明确显示"阿玄"，设定文本也在旁边，
+    看起来一切正常，只有模型的回答暴露了问题。
+    """
+    from foundry.api import service
+    from foundry.storage import repo
+
+    state = model_client.app.state.foundry
+
+    # 建一个角色
+    role = service.save_role(state, role_id=None, name="阿玄", content="你是阿玄，一个活泼的助手。")
+    assert role["id"]
+
+    # 验证注入函数能取回内容
+    got = service._load_role_content(state, role["id"])
+    assert "阿玄" in got
+
+    # 验证 build_prompt 确实把它渲染成 System 段
+    from foundry.infer.params import InferParams
+    from foundry.infer.prompt import ChatMessage, build_prompt
+
+    msgs = [ChatMessage(role="system", content=got), ChatMessage(role="user", content="你是谁")]
+    prompt = build_prompt(msgs, params=InferParams.default(), thinking_mode=False)
+    assert "你是阿玄" in prompt
+    assert prompt.index("System:") < prompt.index("你是谁")
+
+    _ = repo  # 保持导入一致性
+
+
+def test_missing_role_degrades_gracefully(model_client):
+    """role_id 指向已删除的角色时，应降级为无角色而不是报错。"""
+    from foundry.api import service
+
+    state = model_client.app.state.foundry
+    assert service._load_role_content(state, "none") == ""
+    assert service._load_role_content(state, None) == ""
+    assert service._load_role_content(state, "does-not-exist") == ""

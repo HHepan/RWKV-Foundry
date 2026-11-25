@@ -607,6 +607,19 @@ def chat(
 
     messages = [ChatMessage.from_dict(m) for m in history]
 
+    # ★ 注入角色卡为 system 消息
+    #
+    # 这里修过一个完整链路断裂的缺陷：前端选了角色、后端把 role_id 存进
+    # session 表，但**从来没把角色内容拼进 prompt**。于是模型完全不知道
+    # 角色设定，用户问「你是谁」它只会回答「我没有相关记录」——
+    # 角色卡形同虚设，只是被保存和展示。
+    #
+    # 现在按 role_id 从库里取回设定，作为 system 消息插到最前面。
+    # build_prompt 会把首条 system 提成独立的 System 段并始终保留（不参与裁剪）。
+    role_content = _load_role_content(state, role_id)
+    if role_content:
+        messages = [ChatMessage(role="system", content=role_content), *messages]
+
     result = state.engine.generate(
         session_key=session_key,
         user_message=message,
@@ -637,6 +650,21 @@ def chat(
     return result.as_dict()
 
 
+def _load_role_content(state: AppState, role_id: str | None) -> str:
+    """按 role_id 取角色设定文本。找不到或为 ``none`` 时返回空串。
+
+    刻意不抛异常：角色被删掉但会话还留着 role_id 是很常见的情况，
+    这时应当静默降级为「无角色」，而不是让整个对话失败。
+    """
+    if not role_id or role_id == "none":
+        return ""
+    for row in repo.list_roles(state.db):
+        if row["id"] == role_id:
+            return (row["content"] or "").strip()
+    logger.warning("role_id=%r 对应的角色卡不存在，按无角色处理", role_id)
+    return ""
+
+
 def _upsert_session(
     state: AppState, model_ref: str, session_name: str, role_id: str | None, params: InferParams
 ) -> int:
@@ -664,6 +692,12 @@ def regenerate(state: AppState, **kwargs) -> dict:
     )
     infer_params = InferParams.from_dict(kwargs.get("params") or {}).validate()
     messages = [ChatMessage.from_dict(m) for m in kwargs.get("history") or []]
+
+    # 与 chat() 保持一致：重生成同样要带上角色卡，
+    # 否则重生成出来的回复会「忘记」角色设定，与上一次风格突变。
+    role_content = _load_role_content(state, kwargs.get("role_id"))
+    if role_content:
+        messages = [ChatMessage(role="system", content=role_content), *messages]
 
     result = state.engine.generate(
         session_key=session_key,
