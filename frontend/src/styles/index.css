@@ -21,6 +21,8 @@ body,
 }
 
 body {
+  /* 安全网：任何意外超宽元素都不该让整页横向滚动 */
+  overflow-x: hidden;
   font-family:
     'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
     'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
@@ -44,6 +46,17 @@ body {
   border-bottom: 1px solid var(--foundry-border);
   font-size: 13px;
   font-weight: 600;
+  /* 兜底：任何子项都不得撑开父容器导致横向滚动 */
+  overflow: hidden;
+  min-width: 0;
+}
+
+/* 标题内的文字默认单行省略，避免长模型名把整行顶宽 */
+.panel-title > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .panel-body {

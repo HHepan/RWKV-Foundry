@@ -984,6 +984,19 @@ const reuseRatio = computed(() => {
 .head-actions {
   display: flex;
   gap: 2px;
+  flex: 0 0 auto;
+}
+
+/*
+ * 头部兜底：任何子项溢出都不得撑开父容器。
+ *
+ * .panel-title 在 index.css 里是全局样式（justify-content: space-between，
+ * 无 overflow 约束）。窄屏时「齿轮按钮 + 长模型名 + 模式切换 + 仪表按钮」
+ * 一排摆不下，会把整个卡片顶宽，进而让 .app-main 出现横向滚动条。
+ */
+.chat-panel .panel-title {
+  overflow: hidden;
+  gap: 4px;
 }
 
 .messages {
@@ -1269,11 +1282,20 @@ const reuseRatio = computed(() => {
 }
 
 /* ── 模式切换 ─────────────────────────────────────────────────────────── */
+/*
+ * flex:1 + min-width:0 是让内部文本能省略的关键组合。
+ *
+ * 只写 min-width:0 不够 —— flex 项默认 flex:0 1 auto，
+ * 基准宽度仍取内容宽度，模型名一长就把父容器撑开。
+ * 显式 flex:1 后才能让 1fr 生效，配合子项的 ellipsis 才不会溢出。
+ */
 .title-left {
   display: flex;
   align-items: center;
   gap: 12px;
   min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
 }
 
 .mode-switch {
@@ -1354,6 +1376,8 @@ const reuseRatio = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* flex:1 让它在 title-left 内部吃剩余空间；min-width:0 允许缩到 0 */
+  flex: 1 1 auto;
   min-width: 0;
 }
 

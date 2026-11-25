@@ -316,6 +316,12 @@ const navs = [
   background: #f5f6f8;
   padding: 16px;
   overflow: auto;
+  /*
+   * min-width:0 是关键。
+   * el-main 是 el-container 的 flex 子项，默认 min-width:auto，
+   * 子内容比视口宽时它会被撑开，从而产生整页横向滚动条。
+   */
+  min-width: 0;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
